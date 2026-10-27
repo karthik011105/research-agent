@@ -1,0 +1,12 @@
+# Test-only deps. Deliberately not `-r requirements.txt`: the tests don't import the
+# embedding model, so CI skips the multi-GB torch/sentence-transformers install.
+httpx==0.28.1
+redis[hiredis]==8.0.1
+langgraph==1.2.6
+langchain-core==1.4.8
+langsmith==0.9.3
+boto3==1.43.36
+pytest==8.4.2
+pytest-asyncio==1.2.0
+respx==0.22.0
+fakeredis==2.31.3

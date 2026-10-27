@@ -3,12 +3,36 @@ name: Build and Deploy
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 env:
   AWS_REGION: us-east-1
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"  # same as app/Dockerfile
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install test dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest -q
+
   deploy:
+    needs: test
+    # PRs only run the tests; images are built and deployed from main
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
