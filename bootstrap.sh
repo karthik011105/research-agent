@@ -10,15 +10,16 @@ TABLE="research-agent-tf-locks"
 echo "AWS account: $ACCOUNT"
 echo "Creating S3 bucket: $BUCKET in region: $REGION"
 
-if [ "$REGION" = "us-east-1" ]; then
-  aws s3api create-bucket \
-    --bucket "$BUCKET" \
-    --region "$REGION" 2>/dev/null && echo "Bucket created." || echo "Bucket already exists, continuing."
+# Only skip creation when the bucket is really there; any other error (e.g. missing permissions) stops the script
+if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+  echo "Bucket already exists, continuing."
+elif [ "$REGION" = "us-east-1" ]; then
+  aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" >/dev/null && echo "Bucket created."
 else
   aws s3api create-bucket \
     --bucket "$BUCKET" \
     --region "$REGION" \
-    --create-bucket-configuration LocationConstraint="$REGION" 2>/dev/null && echo "Bucket created." || echo "Bucket already exists, continuing."
+    --create-bucket-configuration LocationConstraint="$REGION" >/dev/null && echo "Bucket created."
 fi
 
 echo "Enabling versioning on S3 bucket..."
@@ -39,12 +40,18 @@ aws s3api put-bucket-encryption \
     '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 
 echo "Creating DynamoDB table for Terraform state locking: $TABLE"
-aws dynamodb create-table \
-  --table-name "$TABLE" \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --region "$REGION" 2>/dev/null && echo "DynamoDB table created." || echo "DynamoDB table already exists, continuing."
+if aws dynamodb describe-table --table-name "$TABLE" --region "$REGION" >/dev/null 2>&1; then
+  echo "DynamoDB table already exists, continuing."
+else
+  aws dynamodb create-table \
+    --table-name "$TABLE" \
+    --attribute-definitions AttributeName=LockID,AttributeType=S \
+    --key-schema AttributeName=LockID,KeyType=HASH \
+    --billing-mode PAY_PER_REQUEST \
+    --region "$REGION" >/dev/null
+  aws dynamodb wait table-exists --table-name "$TABLE" --region "$REGION"
+  echo "DynamoDB table created."
+fi
 
 echo "Writing terraform/backend.hcl..."
 cat > "$(dirname "$0")/terraform/backend.hcl" <<EOF
