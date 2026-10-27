@@ -273,6 +273,7 @@ resource "aws_vpc_endpoint" "ecr_dkr" {
   subnet_ids          = aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.vpc_endpoints.id]
   private_dns_enabled = true
+  timeouts { delete = "30m" }  # AWS can take >10 min (Terraform's default) to delete interface endpoints
 }
 
 resource "aws_vpc_endpoint" "ecr_api" {
@@ -283,6 +284,7 @@ resource "aws_vpc_endpoint" "ecr_api" {
   subnet_ids          = aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.vpc_endpoints.id]
   private_dns_enabled = true
+  timeouts { delete = "30m" }  # AWS can take >10 min (Terraform's default) to delete interface endpoints
 }
 
 resource "aws_vpc_endpoint" "s3" {
@@ -300,6 +302,7 @@ resource "aws_vpc_endpoint" "secretsmanager" {
   subnet_ids          = aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.vpc_endpoints.id]
   private_dns_enabled = true
+  timeouts { delete = "30m" }  # AWS can take >10 min (Terraform's default) to delete interface endpoints
 }
 
 resource "aws_vpc_endpoint" "bedrock_runtime" {
@@ -310,6 +313,7 @@ resource "aws_vpc_endpoint" "bedrock_runtime" {
   subnet_ids          = aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.vpc_endpoints.id]
   private_dns_enabled = true
+  timeouts { delete = "30m" }  # AWS can take >10 min (Terraform's default) to delete interface endpoints
 }
 
 resource "aws_vpc_endpoint" "cloudwatch_logs" {
@@ -320,6 +324,7 @@ resource "aws_vpc_endpoint" "cloudwatch_logs" {
   subnet_ids          = aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.vpc_endpoints.id]
   private_dns_enabled = true
+  timeouts { delete = "30m" }  # AWS can take >10 min (Terraform's default) to delete interface endpoints
 }
 
 # ─── Security Groups ──────────────────────────────────────────────────────────
