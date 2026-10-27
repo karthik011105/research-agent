@@ -4,7 +4,7 @@ from langgraph.graph import END
 from app import agents
 from app.agents import (
     OrchestratorAgent, build_graph, cited_ids, clean_queries, initial_state, parse_json_object, sources_section,
-    strip_citations,
+    response_text, strip_citations,
 )
 from app.tools.search import SearchUnavailable
 from tests.conftest import make_source
@@ -30,6 +30,13 @@ def test_sources_section_lists_only_cited_sources():
     section = sources_section("Claim [3]. Other [1].", sources)
     assert "[1] Page 1" in section and "[3] Page 3" in section and "[2]" not in section
     assert sources_section("No citations.", sources) == ""
+
+
+def test_response_text_skips_reasoning_blocks():
+    body = {"content": [{"type": "thought", "text": "let me think"}, {"type": "text", "text": "Answer"}]}
+    assert response_text(body) == "Answer"
+    with pytest.raises(ValueError):
+        response_text({"content": [{"type": "thought", "text": "only thinking"}]})
 
 
 def test_strip_citations_removes_markers_and_sources_list():

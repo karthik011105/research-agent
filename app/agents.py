@@ -64,8 +64,16 @@ async def _tz_call(config: Config, function_name: str, message: str) -> str:
     )
 
 
+def response_text(body: dict) -> str:
+    """Joins the answer's text blocks. Reasoning models may also return "thought" blocks, which are skipped."""
+    text = "".join(block.get("text", "") for block in body.get("content", []) if block.get("type") == "text")
+    if not text.strip():
+        raise ValueError(f"TensorZero returned no text content: {str(body)[:300]}")
+    return text
+
+
 async def _tz_call_once(config: Config, function_name: str, message: str) -> str:
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=180) as client:
         response = await client.post(
             f"{config.tensorzero_url}/inference",
             json={
@@ -74,7 +82,7 @@ async def _tz_call_once(config: Config, function_name: str, message: str) -> str
             },
         )
         response.raise_for_status()
-        return response.json()["content"][0]["text"]
+        return response_text(response.json())
 
 
 def parse_json_object(text: str) -> dict:

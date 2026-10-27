@@ -5,6 +5,7 @@ import logging
 from langsmith import Client, traceable
 from app.config import Config
 from app.retry import with_retry
+from app.agents import response_text
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ async def _judge_once(config: Config, prompt: str) -> str:
             },
         )
         r.raise_for_status()
-        return r.json()["content"][0]["text"]
+        return response_text(r.json())
 
 
 @traceable(run_type="chain", name="eval:relevance")

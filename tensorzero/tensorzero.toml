@@ -1,16 +1,24 @@
 [gateway]
 bind_address = "0.0.0.0:3000"
 
+# Groq only (free tier: ~8,000 tokens/min and 1,000 requests/day per model, so keep input + max_tokens
+# of a single call well under 8,000). Tried in order; the next one is used when a model errors or hits its rate limit.
+# Model ids change over time — list the ones your key can use: GET https://api.groq.com/openai/v1/models
+# To use OpenAI again: add a provider with type = "openai", model_name = "gpt-4o-mini" and put it first in routing.
 [models.research_model]
-routing = ["openai_gpt4o", "groq_fallback"]
+routing = ["groq_gpt_oss_120b", "groq_gpt_oss_20b", "groq_qwen"]
 
-[models.research_model.providers.openai_gpt4o]
-type = "openai"
-model_name = "gpt-4o"
-
-[models.research_model.providers.groq_fallback]
+[models.research_model.providers.groq_gpt_oss_120b]
 type = "groq"
-model_name = "llama-3.1-8b-instant"
+model_name = "openai/gpt-oss-120b"
+
+[models.research_model.providers.groq_gpt_oss_20b]
+type = "groq"
+model_name = "openai/gpt-oss-20b"
+
+[models.research_model.providers.groq_qwen]
+type = "groq"
+model_name = "qwen/qwen3.8-27b"
 
 [functions.research_summarize]
 type = "chat"
@@ -31,7 +39,7 @@ type = "chat_completion"
 model = "research_model"
 weight = 1.0
 temperature = 0.5
-max_tokens = 4000
+max_tokens = 3500
 system_template = "templates/report_write_system.minijinja"
 
 [functions.research_plan]
@@ -42,7 +50,7 @@ type = "chat_completion"
 model = "research_model"
 weight = 1.0
 temperature = 0.2
-max_tokens = 500
+max_tokens = 1200
 system_template = "templates/research_plan_system.minijinja"
 
 [functions.research_extract]
@@ -53,7 +61,7 @@ type = "chat_completion"
 model = "research_model"
 weight = 1.0
 temperature = 0.1
-max_tokens = 2000
+max_tokens = 2500
 system_template = "templates/research_extract_system.minijinja"
 
 [functions.research_verify]
@@ -64,5 +72,5 @@ type = "chat_completion"
 model = "research_model"
 weight = 1.0
 temperature = 0.0
-max_tokens = 600
+max_tokens = 1500
 system_template = "templates/research_verify_system.minijinja"
