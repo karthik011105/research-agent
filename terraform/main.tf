@@ -986,6 +986,29 @@ resource "aws_ecr_repository" "tensorzero" {
   image_scanning_configuration { scan_on_push = true }
 }
 
+# Every deploy pushes a new image (the app one is ~3.5 GB) and ECR bills storage even while paused.
+# Keep the newest 3 per repo — enough for the deploy workflow's rollback to the previous version.
+resource "aws_ecr_lifecycle_policy" "keep_recent" {
+  for_each   = {
+    app        = aws_ecr_repository.app.name
+    pyrit      = aws_ecr_repository.pyrit.name
+    tensorzero = aws_ecr_repository.tensorzero.name
+  }
+  repository = each.value
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep only the 3 most recent images"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 3
+      }
+      action = { type = "expire" }
+    }]
+  })
+}
+
 # ─── EventBridge (weekly red team) ───────────────────────────────────────────
 
 resource "aws_cloudwatch_event_rule" "weekly_redteam" {
