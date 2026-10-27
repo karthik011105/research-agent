@@ -18,6 +18,8 @@ def config():
         source_char_limit=1500,
         llm_max_retries=1,
         llm_retry_delay=0.0,
+        llm_rate_limit_retries=2,
+        critic_source_chars=600,
         agent_report_truncate=3000,
         critic_report_truncate=8000,
         agent_max_iterations=2,

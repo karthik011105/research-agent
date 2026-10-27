@@ -1,11 +1,8 @@
-import asyncio
 import re
-import httpx
 import logging
 from langsmith import Client, traceable
 from app.config import Config
-from app.retry import with_retry
-from app.agents import response_text
+from app.agents import _tz_call
 
 logger = logging.getLogger(__name__)
 
@@ -26,24 +23,8 @@ def _parse_score(text: str) -> float:
 
 
 async def _judge(config: Config, prompt: str) -> str:
-    return await with_retry(
-        lambda: _judge_once(config, prompt),
-        max_retries=config.llm_max_retries,
-        delay=config.llm_retry_delay,
-    )
-
-
-async def _judge_once(config: Config, prompt: str) -> str:
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            f"{config.tensorzero_url}/inference",
-            json={
-                "function_name": "research_summarize",
-                "input": {"messages": [{"role": "user", "content": prompt}]},
-            },
-        )
-        r.raise_for_status()
-        return response_text(r.json())
+    # research_judge has a small output budget; _tz_call waits out rate limits like the agents do
+    return await _tz_call(config, "research_judge", prompt)
 
 
 @traceable(run_type="chain", name="eval:relevance")
@@ -113,16 +94,17 @@ async def eval_groundedness(config: Config, report: str, sources: list[dict]) ->
 
 @traceable(run_type="chain", name="evaluate-report")
 async def evaluate_report(config: Config, job_id: str, topic: str, report: str, sources: list[dict]) -> dict:
-    """Runs the LLM judges in parallel (groundedness only when the report has web sources). Called on EVERY research job automatically."""
+    """Runs the LLM judges (groundedness only when the report has web sources). Called on EVERY research job automatically.
+    One at a time: in parallel they burst past free-tier per-minute token limits and starve the next research job."""
     judges = [
-        eval_relevance(config, topic, report),
-        eval_completeness(config, report),
-        eval_hallucination(config, topic, report),
-        eval_quality(config, topic, report),
+        lambda: eval_relevance(config, topic, report),
+        lambda: eval_completeness(config, report),
+        lambda: eval_hallucination(config, topic, report),
+        lambda: eval_quality(config, topic, report),
     ]
     if sources:
-        judges.append(eval_groundedness(config, report, sources))
-    results = await asyncio.gather(*judges)
+        judges.append(lambda: eval_groundedness(config, report, sources))
+    results = [await judge() for judge in judges]
     scores = {r["key"]: r["score"] for r in results}
     try:
         client = _ls()

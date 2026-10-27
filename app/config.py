@@ -77,6 +77,7 @@ class Config:
         self.agent_report_truncate: int = int(data.get("AGENT_REPORT_TRUNCATE", 3000))
         self.agent_max_iterations: int = int(data.get("AGENT_MAX_ITERATIONS", 2))
         self.critic_report_truncate: int = int(data.get("CRITIC_REPORT_TRUNCATE", 8000))
+        self.critic_source_chars: int = int(data.get("CRITIC_SOURCE_CHARS", 600))
 
         # Eval tuning
         self.eval_report_truncate: int = int(data.get("EVAL_REPORT_TRUNCATE", 1500))
@@ -85,6 +86,8 @@ class Config:
         # LLM retry
         self.llm_max_retries: int = int(data.get("LLM_MAX_RETRIES", 3))
         self.llm_retry_delay: float = float(data.get("LLM_RETRY_DELAY", 1.0))
+        # Free-tier LLMs hit per-minute token limits mid-pipeline; each retry waits as long as the provider asks
+        self.llm_rate_limit_retries: int = int(data.get("LLM_RATE_LIMIT_RETRIES", 5))
 
         # Rate limiting (per IP, per window)
         self.rate_limit_requests: int = int(data.get("RATE_LIMIT_REQUESTS", 10))

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import httpx
@@ -56,12 +57,41 @@ def initial_state(topic: str, session_id: str, session_history: list[dict], ltm_
     )
 
 
+_RETRY_IN = re.compile(r"try again in (?:(\d+)m)?([\d.]+)s", re.IGNORECASE)
+_MAX_RATE_LIMIT_WAIT = 65.0  # per-minute limits reset within a minute; longer waits mean a daily limit
+
+
+def rate_limit_wait(error_body: str) -> float | None:
+    """Seconds to wait when every model was rate-limited, None if this isn't a rate-limit error.
+    TensorZero's 502 body carries each provider's error; the shortest 'try again in' wins."""
+    if "rate_limit" not in error_body and "429" not in error_body:
+        return None
+    waits = [int(m or 0) * 60 + float(s) for m, s in _RETRY_IN.findall(error_body)]
+    return min(waits) + 1.0 if waits else 20.0
+
+
 async def _tz_call(config: Config, function_name: str, message: str) -> str:
-    return await with_retry(
-        lambda: _tz_call_once(config, function_name, message),
-        max_retries=config.llm_max_retries,
-        delay=config.llm_retry_delay,
-    )
+    """with_retry handles transient errors; a rate-limited call instead waits as long as the provider asks."""
+    for attempt in range(config.llm_rate_limit_retries + 1):
+        try:
+            return await with_retry(
+                lambda: _tz_call_once(config, function_name, message),
+                max_retries=config.llm_max_retries,
+                delay=config.llm_retry_delay,
+                retry_if=lambda e: not _is_rate_limited(e),
+            )
+        except httpx.HTTPStatusError as e:
+            wait = rate_limit_wait(e.response.text)
+            if wait is None or attempt == config.llm_rate_limit_retries:
+                raise
+            if wait > _MAX_RATE_LIMIT_WAIT:
+                raise RuntimeError(f"LLM daily limit reached for all models (retry in {wait / 60:.0f} min)") from e
+            logger.warning(f"{function_name}: all models rate-limited, waiting {wait:.0f}s ({attempt + 1}/{config.llm_rate_limit_retries})")
+            await asyncio.sleep(wait)
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    return isinstance(exc, httpx.HTTPStatusError) and rate_limit_wait(exc.response.text) is not None
 
 
 def response_text(body: dict) -> str:
@@ -266,12 +296,15 @@ class CriticAgent:
     async def run(self, report: str, sources: list[dict]) -> tuple[bool, str]:
         logger.info("CriticAgent: verifying report")
         if sources:
+            # Only the cited sources, shortened — keeps this call inside free-tier per-minute token limits
+            used = cited_ids(report)
+            cited = [{**s, "content": s["content"][:self.config.critic_source_chars]} for s in sources if s["id"] in used]
             prompt = (
                 f"Check that the claims in this report are supported by the sources they cite, and that "
                 f"no important claim is uncited or contradicts the sources.\n"
                 f"Reply with YES if it passes, or NO followed by a short list of the problems.\n\n"
                 f"REPORT:\n{report[:self.config.critic_report_truncate]}\n\n"
-                f"SOURCES:\n{format_sources(sources)}"
+                f"SOURCES:\n{format_sources(cited) or '(the report cites no sources)'}"
             )
         else:
             prompt = (

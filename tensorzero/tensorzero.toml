@@ -74,3 +74,14 @@ weight = 1.0
 temperature = 0.0
 max_tokens = 1500
 system_template = "templates/research_verify_system.minijinja"
+
+[functions.research_judge]
+type = "chat"
+
+[functions.research_judge.variants.primary]
+type = "chat_completion"
+model = "research_model"
+weight = 1.0
+temperature = 0.0
+max_tokens = 800
+system_template = "templates/research_judge_system.minijinja"
