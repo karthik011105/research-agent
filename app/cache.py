@@ -18,17 +18,26 @@ def _embed(text: str) -> list:
     return _model.encode(text).tolist()
 
 
-async def cache_get(redis: aioredis.Redis, config: Config, query: str) -> str | None:
+async def cache_get(redis: aioredis.Redis, config: Config, query: str) -> dict | None:
+    """Returns {"report", "sources"} for a semantically similar earlier query."""
     query_emb = _embed(query)
     async for key in redis.scan_iter(f"{_EMB_PREFIX}*"):
-        stored_emb = json.loads(await redis.get(key))
-        if _cosine_similarity(query_emb, stored_emb) >= config.cache_similarity_threshold:
-            cache_key = key.replace(_EMB_PREFIX, _CACHE_PREFIX)
-            return await redis.get(cache_key)
+        stored = await redis.get(key)
+        if stored is None:
+            continue
+        if _cosine_similarity(query_emb, json.loads(stored)) >= config.cache_similarity_threshold:
+            cached = await redis.get(key.replace(_EMB_PREFIX, _CACHE_PREFIX))
+            if cached is None:
+                continue
+            try:
+                return json.loads(cached)
+            except json.JSONDecodeError:
+                # Entry written before sources were cached: plain report text
+                return {"report": cached, "sources": []}
     return None
 
 
-async def cache_set(redis: aioredis.Redis, config: Config, query: str, result: str) -> None:
+async def cache_set(redis: aioredis.Redis, config: Config, query: str, report: str, sources: list[dict]) -> None:
     key_suffix = abs(hash(query))
-    await redis.setex(f"{_CACHE_PREFIX}{key_suffix}", config.cache_ttl, result)
+    await redis.setex(f"{_CACHE_PREFIX}{key_suffix}", config.cache_ttl, json.dumps({"report": report, "sources": sources}))
     await redis.setex(f"{_EMB_PREFIX}{key_suffix}", config.cache_ttl, json.dumps(_embed(query)))

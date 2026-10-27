@@ -94,15 +94,34 @@ async def eval_quality(config: Config, topic: str, report: str) -> dict:
     return {"key": "overall_quality", "score": _parse_score(verdict), "comment": verdict[:config.eval_comment_truncate]}
 
 
+@traceable(run_type="chain", name="eval:groundedness")
+async def eval_groundedness(config: Config, report: str, sources: list[dict]) -> dict:
+    source_list = "\n".join(f"[{s['id']}] {s['title']} — {s['url']}" for s in sources)
+    verdict = await _judge(
+        config,
+        f"This report was written from the web sources listed below and should cite them as [n].\n"
+        f"Rate how well its claims are grounded: are key claims cited, do citation numbers exist in the list, "
+        f"and are there confident claims with no citation?\n"
+        f"Score: 10/10 = every key claim cited with a valid source, 1/10 = mostly uncited or invalid citations.\n"
+        f"Reply with exactly: SCORE: X/10 on the first line, then one sentence reason.\n\n"
+        f"Sources:\n{source_list}\n\n"
+        f"Report:\n{report[:config.eval_report_truncate]}",
+    )
+    return {"key": "groundedness", "score": _parse_score(verdict), "comment": verdict[:config.eval_comment_truncate]}
+
+
 @traceable(run_type="chain", name="evaluate-report")
-async def evaluate_report(config: Config, job_id: str, topic: str, report: str) -> dict:
-    """Runs all 4 LLM judges in parallel. Called on EVERY research job automatically."""
-    results = await asyncio.gather(
+async def evaluate_report(config: Config, job_id: str, topic: str, report: str, sources: list[dict]) -> dict:
+    """Runs the LLM judges in parallel (groundedness only when the report has web sources). Called on EVERY research job automatically."""
+    judges = [
         eval_relevance(config, topic, report),
         eval_completeness(config, report),
         eval_hallucination(config, topic, report),
         eval_quality(config, topic, report),
-    )
+    ]
+    if sources:
+        judges.append(eval_groundedness(config, report, sources))
+    results = await asyncio.gather(*judges)
     scores = {r["key"]: r["score"] for r in results}
     try:
         client = _ls()
@@ -117,7 +136,7 @@ async def evaluate_report(config: Config, job_id: str, topic: str, report: str) 
             inputs={"topic": topic},
             outputs={"report_preview": report[:400]},
             dataset_id=dataset.id,
-            metadata={"job_id": job_id, **scores},
+            metadata={"job_id": job_id, "sources_count": len(sources), **scores},
         )
     except Exception as e:
         logger.warning(f"LangSmith logging failed for job {job_id}: {e}")
@@ -137,19 +156,13 @@ async def fetch_recent_topics(limit: int = 10) -> list[str]:
 
 
 async def run_batch_evaluation(config: Config, graph, topics: list[str]) -> list[dict]:
-    from app.agents import ResearchState
+    from app.agents import initial_state
     from app.memory import ltm_search_related
     results = []
     for topic in topics:
         ltm_context = await ltm_search_related(config, topic) or ""
-        state = ResearchState(
-            topic=topic, session_id="batch-eval",
-            session_history=[],
-            ltm_context=ltm_context,
-            search_results=[], summaries=[], report="",
-            verified=False, error="", iterations=0,
-        )
-        final = await graph.ainvoke(state)
-        scores = await evaluate_report(config, f"batch-{topic[:20]}", topic, final["report"])
+        final = await graph.ainvoke(initial_state(topic, "batch-eval", [], ltm_context))
+        sources = final["sources"] if final["live_sources"] else []
+        scores = await evaluate_report(config, f"batch-{topic[:20]}", topic, final["report"], sources)
         results.append({"topic": topic, "scores": scores})
     return results

@@ -35,6 +35,7 @@ async def db_migrate(config: Config) -> None:
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             )
         """)
+        await conn.execute("ALTER TABLE reports ADD COLUMN IF NOT EXISTS sources JSONB NOT NULL DEFAULT '[]'::jsonb")
         await conn.execute(f"""
             CREATE INDEX IF NOT EXISTS reports_embedding_idx
             ON reports USING ivfflat (embedding vector_cosine_ops)
@@ -44,17 +45,17 @@ async def db_migrate(config: Config) -> None:
         await conn.execute("CREATE INDEX IF NOT EXISTS reports_created_idx ON reports (created_at DESC)")
 
 
-async def ltm_store(config: Config, topic: str, report: str, report_id: str) -> None:
+async def ltm_store(config: Config, topic: str, report: str, report_id: str, sources: list[dict]) -> None:
     embedding = await asyncio.to_thread(lambda: _model.encode(topic).tolist())
     pool = get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO reports (id, topic, report, embedding, created_at)
-            VALUES ($1, $2, $3, $4::vector, $5)
+            INSERT INTO reports (id, topic, report, embedding, created_at, sources)
+            VALUES ($1, $2, $3, $4::vector, $5, $6::jsonb)
             ON CONFLICT (id) DO NOTHING
             """,
-            report_id, topic, report, str(embedding), datetime.utcnow(),
+            report_id, topic, report, str(embedding), datetime.utcnow(), json.dumps(sources),
         )
 
 
@@ -64,16 +65,20 @@ async def ltm_search(config: Config, topic: str) -> dict | None:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT id, topic, report, created_at,
+            SELECT id, topic, report, sources, created_at,
                    1 - (embedding <=> $1::vector) AS similarity
             FROM reports
-            WHERE created_at > NOW() - ($2 || ' days')::INTERVAL
+            WHERE created_at > NOW() - ($2 || ' hours')::INTERVAL
               AND 1 - (embedding <=> $1::vector) > $3
             ORDER BY similarity DESC LIMIT 1
             """,
-            str(embedding), str(config.ltm_days), config.ltm_threshold,
+            str(embedding), str(config.ltm_fresh_hours), config.ltm_threshold,
         )
-        return dict(row) if row else None
+        if not row:
+            return None
+        hit = dict(row)
+        hit["sources"] = json.loads(hit["sources"]) if isinstance(hit["sources"], str) else hit["sources"]
+        return hit
 
 
 async def ltm_search_related(config: Config, topic: str) -> str | None:

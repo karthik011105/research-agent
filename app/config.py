@@ -48,7 +48,8 @@ class Config:
         self.session_content_truncate: int = int(data.get("SESSION_CONTENT_TRUNCATE", 500))
 
         # Long-term memory
-        self.ltm_days: int = int(data.get("LTM_DAYS", 7))
+        # Reports older than this are re-researched with live search instead of reused
+        self.ltm_fresh_hours: int = int(data.get("LTM_FRESH_HOURS", 24))
         self.ltm_threshold: float = float(data.get("LTM_THRESHOLD", 0.88))
         self.ltm_diff_threshold: float = float(data.get("LTM_DIFF_THRESHOLD", 0.7))
         self.ltm_diff_limit: int = int(data.get("LTM_DIFF_LIMIT", 5))
@@ -61,9 +62,21 @@ class Config:
         self.consumer_name: str = data.get("CONSUMER_NAME", socket.gethostname())
         self.result_ttl: int = int(data.get("RESULT_TTL", 3600))
 
+        # Live web search (Tavily primary, Brave optional fallback)
+        self.tavily_api_key: str = data.get("TAVILY_API_KEY", "")
+        self.brave_api_key: str = data.get("BRAVE_API_KEY", "")
+        self.search_max_results: int = int(data.get("SEARCH_MAX_RESULTS", 5))
+        self.search_max_sources: int = int(data.get("SEARCH_MAX_SOURCES", 8))
+        self.search_max_queries: int = int(data.get("SEARCH_MAX_QUERIES", 4))
+        self.search_max_rounds: int = int(data.get("SEARCH_MAX_ROUNDS", 2))
+        self.search_daily_limit: int = int(data.get("SEARCH_DAILY_LIMIT", 40))
+        self.search_cache_ttl: int = int(data.get("SEARCH_CACHE_TTL", 21600))
+        self.source_char_limit: int = int(data.get("SOURCE_CHAR_LIMIT", 1500))
+
         # Agent tuning
         self.agent_report_truncate: int = int(data.get("AGENT_REPORT_TRUNCATE", 3000))
         self.agent_max_iterations: int = int(data.get("AGENT_MAX_ITERATIONS", 2))
+        self.critic_report_truncate: int = int(data.get("CRITIC_REPORT_TRUNCATE", 8000))
 
         # Eval tuning
         self.eval_report_truncate: int = int(data.get("EVAL_REPORT_TRUNCATE", 1500))

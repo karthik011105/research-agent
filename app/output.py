@@ -30,7 +30,7 @@ def generate_pdf(title: str, content: str) -> bytes:
     return buffer.read()
 
 
-def generate_json_report(topic: str, report: str, report_id: str, created_at: datetime) -> dict:
+def generate_json_report(topic: str, report: str, report_id: str, created_at: datetime, sources: list[dict]) -> dict:
     return {
         "report_id": report_id,
         "topic": topic,
@@ -38,6 +38,7 @@ def generate_json_report(topic: str, report: str, report_id: str, created_at: da
         "created_at": created_at.isoformat(),
         "word_count": len(report.split()),
         "checksum": hashlib.md5(report.encode()).hexdigest(),
+        "sources": sources,
     }
 
 
