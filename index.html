@@ -36,11 +36,23 @@
     #spinner { display: none; width: 16px; height: 16px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-left: 8px; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .section-title { color: #58a6ff; font-size: 1rem; font-weight: 600; margin-bottom: 16px; }
+    .check { display: flex; align-items: center; gap: 8px; color: #c9d1d9; font-size: 0.85rem; margin-bottom: 16px; cursor: pointer; }
+    .check input { width: auto; }
+    .badge { padding: 3px 10px; border-radius: 12px; font-size: 0.75rem; margin-left: 8px; }
+    .badge-live { background: #1f3d2b; color: #3fb950; }
+    .badge-model { background: #3d2d1f; color: #d29922; }
+    .badge-origin { background: #21262d; color: #8b949e; }
+    #sources-box { margin-top: 14px; font-size: 0.85rem; }
+    #sources-box ol { padding-left: 0; list-style: none; }
+    #sources-box li { padding: 6px 0; border-bottom: 1px solid #21262d; }
+    #sources-box a { color: #58a6ff; text-decoration: none; }
+    #sources-box a:hover { text-decoration: underline; }
+    .src-meta { color: #8b949e; font-size: 0.75rem; word-break: break-all; }
   </style>
 </head>
 <body>
   <h1>Autonomous Research Agent</h1>
-  <p class="subtitle">Powered by LangGraph · TensorZero · AWS Bedrock Guardrails</p>
+  <p class="subtitle">Powered by LangGraph · TensorZero · Live web search · AWS Bedrock Guardrails</p>
 
   <div class="card">
     <div class="section-title">Authentication</div>
@@ -58,8 +70,12 @@
     <div class="section-title">New Research Job</div>
     <div style="margin-bottom:16px">
       <label>Research Topic</label>
-      <input type="text" id="topic" placeholder="e.g. Quantum computing advances in 2024">
+      <input type="text" id="topic" placeholder="e.g. Quantum computing advances this year">
     </div>
+    <label class="check">
+      <input type="checkbox" id="fresh">
+      Fresh search — skip cached and remembered reports, always search the live web
+    </label>
     <div class="row">
       <div>
         <label>Output Format</label>
@@ -84,9 +100,11 @@
     <div class="section-title">Result</div>
     <div style="margin-bottom:12px">
       <span id="job-status" class="status status-pending">Pending</span>
+      <span id="source-badge"></span>
       <span style="color:#8b949e;font-size:0.8rem;margin-left:10px" id="job-id-label"></span>
     </div>
     <div id="report-box" style="display:none"></div>
+    <div id="sources-box" style="display:none"></div>
     <div class="actions" id="export-actions" style="display:none">
       <button class="btn btn-secondary" onclick="downloadPDF()">Download PDF</button>
       <button class="btn btn-secondary" onclick="copyJSON()">Copy JSON</button>
@@ -110,6 +128,31 @@
     let pollInterval = null;
     let lastReport = null;
     let lastTopic = null;
+
+    function esc(text) {
+      return String(text ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function renderSources(data) {
+      const badge = document.getElementById('source-badge');
+      const origin = { cache: 'from cache', memory: 'from memory' }[data.origin];
+      badge.innerHTML = (data.live_sources
+        ? `<span class="badge badge-live">Live web · ${data.sources_count} sources</span>`
+        : '<span class="badge badge-model">Model knowledge only</span>')
+        + (origin ? `<span class="badge badge-origin">${origin}</span>` : '');
+
+      const box = document.getElementById('sources-box');
+      const sources = data.sources || [];
+      if (!sources.length) { box.style.display = 'none'; return; }
+      box.innerHTML = '<div class="section-title" style="margin-bottom:8px">Sources</div><ol>' + sources.map(s => {
+        // only link real web URLs; anything else is shown as text
+        const safe = /^https?:\/\//i.test(s.url);
+        const title = safe ? `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a>` : esc(s.title);
+        const meta = [s.url, s.published_date, s.provider].filter(Boolean).map(esc).join(' · ');
+        return `<li>[${esc(s.id)}] ${title}<div class="src-meta">${meta}</div></li>`;
+      }).join('') + '</ol>';
+      box.style.display = 'block';
+    }
 
     function getApiKey() {
       return localStorage.getItem('research_agent_api_key') || '';
@@ -147,6 +190,7 @@
       if (!topic) return alert('Please enter a research topic.');
       const format = document.getElementById('format').value;
       const sessionId = document.getElementById('session-id').value.trim();
+      const fresh = document.getElementById('fresh').checked;
 
       document.getElementById('submit-btn').disabled = true;
       document.getElementById('spinner').style.display = 'inline-block';
@@ -154,6 +198,8 @@
       document.getElementById('job-status').className = 'status status-pending';
       document.getElementById('job-status').textContent = 'Submitting...';
       document.getElementById('report-box').style.display = 'none';
+      document.getElementById('sources-box').style.display = 'none';
+      document.getElementById('source-badge').innerHTML = '';
       document.getElementById('export-actions').style.display = 'none';
       document.getElementById('diff-box').style.display = 'none';
 
@@ -161,7 +207,7 @@
         const resp = await fetch(`${API}/research`, {
           method: 'POST',
           headers: authHeaders(),
-          body: JSON.stringify({ topic, output_format: format, session_id: sessionId }),
+          body: JSON.stringify({ topic, output_format: format, session_id: sessionId, fresh }),
         });
         if (!resp.ok) {
           const err = await resp.json();
@@ -201,6 +247,7 @@
           document.getElementById('job-status').textContent = 'Complete';
           document.getElementById('report-box').textContent = data.report;
           document.getElementById('report-box').style.display = 'block';
+          renderSources(data);
           document.getElementById('export-actions').style.display = 'flex';
           loadSession();
         } else if (data.status === 'blocked') {
@@ -229,6 +276,7 @@
         report_id: currentJobId,
         topic: lastTopic,
         report: lastReport.report,
+        sources: lastReport.sources || [],
         structured: lastReport.structured || null,
       }, null, 2);
       navigator.clipboard.writeText(json).then(() => alert('JSON copied to clipboard.'));
@@ -261,7 +309,7 @@
         return;
       }
       box.innerHTML = data.messages.map(m =>
-        `<div class="msg msg-${m.role}"><strong style="text-transform:capitalize">${m.role}</strong>: ${m.content}</div>`
+        `<div class="msg msg-${esc(m.role)}"><strong style="text-transform:capitalize">${esc(m.role)}</strong>: ${esc(m.content)}</div>`
       ).join('');
     }
 
