@@ -4,9 +4,19 @@ setlocal
 
 set REGION=us-east-1
 
-set BUCKET=research-agent-tfstate-742057128027
+for /f "delims=" %%i in ('aws sts get-caller-identity --query Account --output text') do set ACCOUNT=%%i
+
+if "%ACCOUNT%"=="" (
+    echo Could not read your AWS account id. Run "aws configure" first.
+    exit /b 1
+)
+
+rem S3 bucket names are global - the account id keeps this one unique per AWS account
+set BUCKET=research-agent-tfstate-%ACCOUNT%
 
 set TABLE=research-agent-tf-locks
+
+echo AWS account: %ACCOUNT%
 
 echo Creating S3 bucket: %BUCKET% in region: %REGION%
 
@@ -40,11 +50,17 @@ if %errorlevel% equ 0 (
     echo DynamoDB table already exists, continuing.
 )
 
+echo Writing terraform\backend.hcl...
+
+> "%~dp0terraform\backend.hcl" echo bucket = "%BUCKET%"
+
+>> "%~dp0terraform\backend.hcl" echo region = "%REGION%"
+
 echo.
 echo Bootstrap complete.
 echo S3 bucket  : %BUCKET% (versioned, encrypted, private)
 echo DynamoDB   : %TABLE% (state locking)
 echo.
-echo Next step: cd terraform then terraform init then terraform apply
+echo Next step: cd terraform then terraform init -reconfigure -backend-config=backend.hcl
 
 endlocal

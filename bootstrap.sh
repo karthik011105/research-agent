@@ -2,9 +2,12 @@
 set -e
 
 REGION=${1:-us-east-1}
-BUCKET="research-agent-tfstate"
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+# S3 bucket names are global — the account id keeps this one unique per AWS account
+BUCKET="research-agent-tfstate-$ACCOUNT"
 TABLE="research-agent-tf-locks"
 
+echo "AWS account: $ACCOUNT"
 echo "Creating S3 bucket: $BUCKET in region: $REGION"
 
 if [ "$REGION" = "us-east-1" ]; then
@@ -43,9 +46,15 @@ aws dynamodb create-table \
   --billing-mode PAY_PER_REQUEST \
   --region "$REGION" 2>/dev/null && echo "DynamoDB table created." || echo "DynamoDB table already exists, continuing."
 
+echo "Writing terraform/backend.hcl..."
+cat > "$(dirname "$0")/terraform/backend.hcl" <<EOF
+bucket = "$BUCKET"
+region = "$REGION"
+EOF
+
 echo ""
 echo "Bootstrap complete."
 echo "  S3 bucket  : $BUCKET (versioned, encrypted, private)"
 echo "  DynamoDB   : $TABLE (state locking)"
 echo ""
-echo "Next step: cd terraform && terraform init && terraform apply"
+echo "Next step: cd terraform && terraform init -reconfigure -backend-config=backend.hcl"

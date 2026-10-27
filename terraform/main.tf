@@ -9,8 +9,8 @@ terraform {
       version = "~> 3.0"
     }
   }
+  # bucket is account-specific: bootstrap writes it to backend.hcl → terraform init -backend-config=backend.hcl
   backend "s3" {
-    bucket         = "research-agent-tfstate-742057128027"
     key            = "terraform.tfstate"
     region         = "us-east-1"
     dynamodb_table = "research-agent-tf-locks"

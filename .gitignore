@@ -21,6 +21,8 @@ build/
 terraform.tfstate
 terraform.tfstate.backup
 *.tfvars
+# written by bootstrap.sh/.bat — names this AWS account's state bucket
+terraform/backend.hcl
 
 # Logs
 *.log

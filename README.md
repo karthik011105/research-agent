@@ -111,10 +111,12 @@ chmod +x bootstrap.sh
 
 Expected output:
 ```
-S3 bucket  : research-agent-tfstate
+S3 bucket  : research-agent-tfstate-<your-account-id>
 DynamoDB   : research-agent-tf-locks
 Bootstrap complete.
 ```
+
+It also writes `terraform/backend.hcl` (git-ignored) with your account's bucket name. Re-run it whenever you switch AWS accounts.
 
 ---
 
@@ -144,9 +146,11 @@ git push -u origin main
 
 ```bash
 cd terraform
-terraform init
-terraform apply -var="app_image=placeholder" -var="pyrit_image=placeholder"
+terraform init -reconfigure -backend-config=backend.hcl
+terraform apply -var="paused=true"
 ```
+
+`paused=true` creates only the parts that don't bill by the hour (VPC, RDS, ECR, Secrets, IAM, Guardrail). The ECR repos are still empty at this point, so there is nothing for ECS to run yet — Step 7 builds the images, then `resume` starts everything.
 
 Type `yes` when asked. Takes 5–10 minutes.
 
@@ -210,20 +214,20 @@ If set, every request to the app must include the header `X-API-Key: your-string
 
 ---
 
-### 7. Wait for GitHub Actions to deploy
+### 7. Build the images, then start the stack
 
-The `git push` in Step 3 already triggered the first deployment. Go check:
+The `git push` in Step 3 ran before the ECR repos existed, so trigger a build now: **GitHub repo → Actions → Build and Deploy → Run workflow** (or push any commit to `main`).
 
-**GitHub repo → Actions tab**
+Wait for it to turn green (~5–10 minutes). It:
+1. Runs the test suite
+2. Builds the app, PyRIT, and TensorZero Docker images and pushes them to ECR
+3. Skips the ECS deploy, because the stack is still paused
 
-Wait for the workflow to turn green (~5–10 minutes). It:
-1. Builds the app, PyRIT, and TensorZero Docker images
-2. Pushes them to ECR
-3. Registers new ECS task definitions
-4. Updates both ECS services
-5. Waits for stability — rolls back automatically if anything fails
-
-Once green, your app is live at the ALB URL from Step 4.
+Then start everything (5–10 minutes):
+```bash
+./resume.sh       # Windows: resume.bat
+```
+It prints the app URL. From now on every push to `main` deploys automatically while the stack is running, and rolls back if the new version is unhealthy.
 
 ---
 
