@@ -9,7 +9,8 @@ Give it a topic → it researches, writes a full report, safety-checks it, cache
 | Component | What It Does |
 |---|---|
 | **FastAPI** | REST API — receives topics, returns reports |
-| **LangGraph** | 4-agent pipeline: Search → Summarize → Write → Verify |
+| **LangGraph** | Multi-agent pipeline: Plan → Web Search → Extract → Gap Check → Write → Verify |
+| **Tavily** (+ optional Brave) | Live web search — reports are built from today's pages, with `[n]` citations |
 | **TensorZero** | LLM gateway — routes to GPT-4o, falls back to Groq Llama-3 |
 | **AWS Bedrock Guardrails** | Blocks harmful input and output automatically |
 | **Redis (ElastiCache)** | Semantic cache + session memory + job queue |
@@ -28,6 +29,7 @@ PROJECT/
 ├── app/
 │   ├── main.py           API, background worker, all endpoints
 │   ├── agents.py         LangGraph multi-agent graph
+│   ├── tools/search.py   Live web search (Tavily, Brave fallback), search cache, daily budget
 │   ├── cache.py          Redis semantic cache
 │   ├── guardrails.py     Bedrock safety checks
 │   ├── memory.py         Session memory (Redis) + long-term memory (pgvector)
@@ -53,6 +55,9 @@ PROJECT/
 ├── bootstrap.bat         One-time backend setup (Windows)
 ├── bootstrap.sh          One-time backend setup (Mac/Linux)
 ├── requirements.txt      Python dependencies
+├── requirements-dev.txt  Test dependencies (no torch)
+├── tests/                pytest suite (runs in CI before every deploy)
+├── scripts/smoke_test.sh End-to-end check of a deployed stack
 ├── index.html            Frontend UI
 └── README.md
 ```
@@ -158,13 +163,17 @@ pyrit_ecr_url  = "123456789.dkr.ecr.us-east-1.amazonaws.com/research-agent-pyrit
 
 ### 5. Get your API keys
 
-You need three keys:
+You need four keys (Brave is optional):
 
 | Key | Where to get it |
 |---|---|
 | `OPENAI_API_KEY` | https://platform.openai.com/api-keys |
 | `GROQ_API_KEY` | https://console.groq.com/keys |
 | `LANGSMITH_API_KEY` | https://smith.langchain.com → Profile → API Keys → Create |
+| `TAVILY_API_KEY` | https://app.tavily.com → sign up → copy the key (`tvly-...`). Free: 1,000 searches/month |
+| `BRAVE_API_KEY` *(optional)* | https://api-dashboard.search.brave.com → Subscriptions → pick a plan → API Keys. Only used if Tavily fails |
+
+Without `TAVILY_API_KEY` the app still works, but reports come from model knowledge only (shown as **Model knowledge only** in the UI).
 
 LangSmith is free. It traces every agent run and stores evaluation scores automatically — no extra setup needed after you add the key.
 
@@ -172,7 +181,7 @@ LangSmith is free. It traces every agent run and stores evaluation scores automa
 
 ### 6. Fill in Secrets Manager
 
-Terraform already filled in Redis URL, database URL, Guardrail ID, and all tuning parameters. You only need to add your three API keys.
+Terraform already filled in Redis URL, database URL, Guardrail ID, and all tuning parameters. You only need to add your API keys.
 
 Go to: **AWS Console → Secrets Manager → `research-agent/config` → Retrieve secret value → Edit**
 
@@ -181,11 +190,14 @@ Replace the `REPLACE_ME` values:
 {
   "OPENAI_API_KEY":    "sk-...",
   "GROQ_API_KEY":      "gsk_...",
-  "LANGSMITH_API_KEY": "ls__..."
+  "LANGSMITH_API_KEY": "ls__...",
+  "TAVILY_API_KEY":    "tvly-..."
 }
 ```
 
-Save. Leave everything else as is.
+Save. Leave everything else as is. If a key is missing from the JSON (older installs), add it as a new line — mind the comma on the line before.
+
+> Terraform never overwrites this secret after it is created, so your keys are safe across `terraform apply`. Running tasks read the secret only at startup — after editing it, restart the app: **ECS → research-agent-cluster → research-agent-app → Update service → Force new deployment**.
 
 **Optional — set an API key to protect your endpoints:**
 
@@ -227,8 +239,23 @@ http://<alb_dns>/
 1. Enter your API key (if you set one in Step 6) — it saves in your browser
 2. Type a research topic
 3. Choose output format (text / PDF / JSON)
-4. Click **Start Research** — polls automatically until done
-5. Click **Show Changes vs Previous** to see what changed since last report on that topic
+4. Tick **Fresh search** to skip cached/remembered reports and always search the live web
+5. Click **Start Research** — polls automatically until done
+6. The badge shows **Live web · N sources** or **Model knowledge only**; sources are listed under the report
+7. Click **Show Changes vs Previous** to see what changed since last report on that topic
+
+### How live search works
+
+1. **Plan** — the LLM turns the topic into up to 4 search queries (it is told today's date)
+2. **Search** — plain Python calls Tavily for each query in parallel (Brave if Tavily fails); duplicates removed, max 8 sources
+3. **Extract** — the LLM pulls facts from the sources, each tagged `[n]`
+4. **Gap check** — if something important is missing, one extra search round (max 2 rounds)
+5. **Write** — report with inline `[n]` citations; the Sources list is appended by code, so URLs can't be invented
+6. **Verify** — the critic checks claims against the cited sources; on failure the writer rewrites with its feedback
+
+Credit protection: identical queries are cached for 6 hours and searches are capped at `SEARCH_DAILY_LIMIT` (default 40/day). If search is unavailable, the report falls back to model knowledge instead of failing.
+
+Reports are reused from cache (1 hour) or long-term memory (`LTM_FRESH_HOURS`, default 24) unless **Fresh search** is ticked.
 
 ---
 
@@ -241,15 +268,20 @@ All requests need the header `X-API-Key: your-key` if you set one.
 curl -X POST http://<alb_dns>/research \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-key" \
-  -d '{"topic": "AI chip market 2025", "session_id": "abc123", "output_format": "text"}'
+  -d '{"topic": "AI chip market 2025", "session_id": "abc123", "output_format": "text", "fresh": true}'
 ```
-Returns: `{"job_id": "...", "session_id": "..."}`
+Returns: `{"job_id": "...", "session_id": "..."}`. `fresh` is optional (default `false`).
 
 **Poll for result:**
 ```bash
 curl http://<alb_dns>/result/<job_id> -H "X-API-Key: your-key"
 ```
-Returns `{"status": "pending"}` until done, then the full report.
+Returns `{"status": "pending"}` until done, then the full report plus `sources` (id, title, url), `live_sources`, `sources_count`, `search_rounds` and `origin` (`pipeline` / `cache` / `memory`).
+
+**Smoke test a deployment** (runs one fresh job and checks it has live sources and citations):
+```bash
+./scripts/smoke_test.sh <alb_dns> [your-api-key]
+```
 
 **Download as PDF:**
 ```bash
@@ -282,7 +314,7 @@ curl http://<alb_dns>/health
 
 Every research job automatically:
 1. Traces every agent node (search, summarize, write, verify) to LangSmith
-2. Runs 4 LLM-as-judge evaluations (relevance, completeness, hallucination risk, quality)
+2. Runs LLM-as-judge evaluations (relevance, completeness, hallucination risk, quality, and groundedness when the report has web sources)
 3. Saves scores to a LangSmith dataset called `research-agent-reports`
 
 View traces: https://smith.langchain.com → Project: `research-agent`

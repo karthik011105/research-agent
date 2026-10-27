@@ -748,6 +748,10 @@ resource "aws_secretsmanager_secret_version" "config" {
     OPENAI_API_KEY   = "REPLACE_ME"
     GROQ_API_KEY     = "REPLACE_ME"
 
+    # Live web search — empty = report from model knowledge only
+    TAVILY_API_KEY   = ""
+    BRAVE_API_KEY    = ""
+
     # Observability
     LANGSMITH_API_KEY = "REPLACE_ME"
     LANGCHAIN_PROJECT = "research-agent"
@@ -772,7 +776,7 @@ resource "aws_secretsmanager_secret_version" "config" {
     SESSION_TTL               = "1800"
     SESSION_MAX_MESSAGES      = "5"
     SESSION_CONTENT_TRUNCATE  = "500"
-    LTM_DAYS                  = "7"
+    LTM_FRESH_HOURS           = "24"
     LTM_THRESHOLD             = "0.88"
     LTM_DIFF_THRESHOLD        = "0.7"
     LTM_DIFF_LIMIT            = "5"
@@ -782,6 +786,14 @@ resource "aws_secretsmanager_secret_version" "config" {
     RESULT_TTL                = "3600"
     AGENT_REPORT_TRUNCATE     = "3000"
     AGENT_MAX_ITERATIONS      = "2"
+    CRITIC_REPORT_TRUNCATE    = "8000"
+    SEARCH_MAX_RESULTS        = "5"
+    SEARCH_MAX_SOURCES        = "8"
+    SEARCH_MAX_QUERIES        = "4"
+    SEARCH_MAX_ROUNDS         = "2"
+    SEARCH_DAILY_LIMIT        = "40"
+    SEARCH_CACHE_TTL          = "21600"
+    SOURCE_CHAR_LIMIT         = "1500"
     EVAL_REPORT_TRUNCATE      = "1500"
     EVAL_COMMENT_TRUNCATE     = "300"
     LLM_MAX_RETRIES           = "3"
