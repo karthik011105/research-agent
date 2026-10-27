@@ -25,7 +25,8 @@ class Config:
         self.bedrock_guardrail_version: str = data["BEDROCK_GUARDRAIL_VERSION"]
 
         # Storage
-        self.redis_url: str = data["REDIS_URL"]
+        # Task env wins: Terraform sets it per deploy, while the secret's copy can go stale across pause/resume
+        self.redis_url: str = os.environ.get("REDIS_URL") or data["REDIS_URL"]
         self.database_url: str = data["DATABASE_URL"]
         self.tensorzero_url: str = data["TENSORZERO_URL"]
 

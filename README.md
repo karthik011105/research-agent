@@ -341,6 +341,29 @@ The weekly red team also runs automatically every Monday at 2am UTC via EventBri
 
 ---
 
+## Pause / Resume (save credits)
+
+Scaling ECS to 0 and stopping RDS is **not enough**: the ALB, Redis, VPC endpoints and public IPs still bill by the hour (~$3.70/day), auto-scaling puts the app back to 1 task, and the weekly red team still starts a task.
+
+**Pause** (removes ALB, Redis, VPC endpoints, ECS services, auto-scaling, weekly red team; stops RDS):
+```bash
+./pause.sh        # Windows: pause.bat
+```
+
+**Resume** (recreates them from the `:latest` images in ECR, 5–10 min):
+```bash
+./resume.sh       # Windows: resume.bat
+```
+
+Kept while paused: RDS data, ECR images, Secrets Manager values, VPC, IAM, Bedrock Guardrail — a few cents a day.
+
+- Redis is recreated empty, so cache, sessions and queued jobs are lost. Reports in Postgres survive.
+- The ALB URL changes on every resume.
+- AWS starts a stopped RDS instance again after 7 days — re-run pause if you stay paused longer.
+- Pushing to `main` while paused still builds and pushes images; the ECS deploy is skipped.
+
+---
+
 ## Tear Down Everything
 
 ```bash

@@ -29,6 +29,17 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Check if stack is paused
+        id: stack
+        run: |
+          # terraform -var="paused=true" removes the ALB target groups; images still get pushed, deploy is skipped
+          if aws elbv2 describe-target-groups --names research-agent-app-tg >/dev/null 2>&1; then
+            echo "running=true" >> $GITHUB_OUTPUT
+          else
+            echo "Stack is paused - images will be pushed but ECS deploy is skipped"
+            echo "running=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build and push app image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -60,6 +71,7 @@ jobs:
           docker push $ECR_REGISTRY/$TZ_REPO:latest
 
       - name: Deploy app to ECS
+        if: steps.stack.outputs.running == 'true'
         id: deploy-app
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -119,6 +131,7 @@ jobs:
           fi
 
       - name: Deploy PyRIT to ECS
+        if: steps.stack.outputs.running == 'true'
         id: deploy-pyrit
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -171,6 +184,7 @@ jobs:
           fi
 
       - name: Wait for app service stability
+        if: steps.stack.outputs.running == 'true'
         run: |
           aws ecs wait services-stable \
             --cluster research-agent-cluster \

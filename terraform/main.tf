@@ -33,16 +33,24 @@ variable "project" {
 }
 
 variable "app_image" {
-  description = "ECR image URI for the main app"
+  description = "ECR image URI for the main app. Empty or \"placeholder\" = <app ECR repo>:latest"
+  default     = ""
 }
 
 variable "pyrit_image" {
-  description = "ECR image URI for the PyRIT dashboard"
+  description = "ECR image URI for the PyRIT dashboard. Empty or \"placeholder\" = <pyrit ECR repo>:latest"
+  default     = ""
 }
 
 variable "tensorzero_image" {
-  description = "ECR image URI for TensorZero gateway sidecar"
-  default     = "placeholder"
+  description = "ECR image URI for TensorZero gateway sidecar. Empty or \"placeholder\" = <tensorzero ECR repo>:latest"
+  default     = ""
+}
+
+variable "paused" {
+  description = "true = remove everything billed by the hour (ALB, Redis, interface VPC endpoints, ECS services, auto-scaling, weekly red team). Keeps RDS, ECR, Secrets, IAM, VPC, Bedrock Guardrail."
+  type        = bool
+  default     = false
 }
 
 variable "api_key" {
@@ -118,6 +126,86 @@ data "aws_availability_zones" "available" {}
 locals {
   azs          = slice(data.aws_availability_zones.available.names, 0, 2)
   https_enabled = var.acm_certificate_arn != ""
+  running       = !var.paused
+  on            = local.running ? 1 : 0
+
+  # GitHub Actions pushes :latest on every deploy, so a resumed stack starts on the newest images
+  app_image        = contains(["", "placeholder"], var.app_image) ? "${aws_ecr_repository.app.repository_url}:latest" : var.app_image
+  pyrit_image      = contains(["", "placeholder"], var.pyrit_image) ? "${aws_ecr_repository.pyrit.repository_url}:latest" : var.pyrit_image
+  tensorzero_image = contains(["", "placeholder"], var.tensorzero_image) ? "${aws_ecr_repository.tensorzero.repository_url}:latest" : var.tensorzero_image
+
+  redis_url = local.running ? "redis://${aws_elasticache_cluster.redis[0].cache_nodes[0].address}:6379" : ""
+  alb_dns   = local.running ? aws_lb.main[0].dns_name : ""
+}
+
+# Existing resources gained `count` for the pause switch — keep their state instead of recreating them
+moved {
+  from = aws_vpc_endpoint.ecr_dkr
+  to   = aws_vpc_endpoint.ecr_dkr[0]
+}
+moved {
+  from = aws_vpc_endpoint.ecr_api
+  to   = aws_vpc_endpoint.ecr_api[0]
+}
+moved {
+  from = aws_vpc_endpoint.secretsmanager
+  to   = aws_vpc_endpoint.secretsmanager[0]
+}
+moved {
+  from = aws_vpc_endpoint.bedrock_runtime
+  to   = aws_vpc_endpoint.bedrock_runtime[0]
+}
+moved {
+  from = aws_vpc_endpoint.cloudwatch_logs
+  to   = aws_vpc_endpoint.cloudwatch_logs[0]
+}
+moved {
+  from = aws_elasticache_cluster.redis
+  to   = aws_elasticache_cluster.redis[0]
+}
+moved {
+  from = aws_lb.main
+  to   = aws_lb.main[0]
+}
+moved {
+  from = aws_lb_target_group.app
+  to   = aws_lb_target_group.app[0]
+}
+moved {
+  from = aws_lb_target_group.pyrit
+  to   = aws_lb_target_group.pyrit[0]
+}
+moved {
+  from = aws_lb_listener.http
+  to   = aws_lb_listener.http[0]
+}
+moved {
+  from = aws_lb_listener.pyrit
+  to   = aws_lb_listener.pyrit[0]
+}
+moved {
+  from = aws_ecs_service.app
+  to   = aws_ecs_service.app[0]
+}
+moved {
+  from = aws_ecs_service.pyrit
+  to   = aws_ecs_service.pyrit[0]
+}
+moved {
+  from = aws_appautoscaling_target.app
+  to   = aws_appautoscaling_target.app[0]
+}
+moved {
+  from = aws_appautoscaling_policy.app_cpu
+  to   = aws_appautoscaling_policy.app_cpu[0]
+}
+moved {
+  from = aws_cloudwatch_event_rule.weekly_redteam
+  to   = aws_cloudwatch_event_rule.weekly_redteam[0]
+}
+moved {
+  from = aws_cloudwatch_event_target.redteam_ecs
+  to   = aws_cloudwatch_event_target.redteam_ecs[0]
 }
 
 # ─── VPC ──────────────────────────────────────────────────────────────────────
@@ -178,6 +266,7 @@ resource "aws_route_table_association" "private" {
 # ─── VPC Endpoints (replaces NAT gateway) ────────────────────────────────────
 
 resource "aws_vpc_endpoint" "ecr_dkr" {
+  count = local.on
   vpc_id              = aws_vpc.main.id
   service_name        = "com.amazonaws.${var.aws_region}.ecr.dkr"
   vpc_endpoint_type   = "Interface"
@@ -187,6 +276,7 @@ resource "aws_vpc_endpoint" "ecr_dkr" {
 }
 
 resource "aws_vpc_endpoint" "ecr_api" {
+  count = local.on
   vpc_id              = aws_vpc.main.id
   service_name        = "com.amazonaws.${var.aws_region}.ecr.api"
   vpc_endpoint_type   = "Interface"
@@ -203,6 +293,7 @@ resource "aws_vpc_endpoint" "s3" {
 }
 
 resource "aws_vpc_endpoint" "secretsmanager" {
+  count = local.on
   vpc_id              = aws_vpc.main.id
   service_name        = "com.amazonaws.${var.aws_region}.secretsmanager"
   vpc_endpoint_type   = "Interface"
@@ -212,6 +303,7 @@ resource "aws_vpc_endpoint" "secretsmanager" {
 }
 
 resource "aws_vpc_endpoint" "bedrock_runtime" {
+  count = local.on
   vpc_id              = aws_vpc.main.id
   service_name        = "com.amazonaws.${var.aws_region}.bedrock-runtime"
   vpc_endpoint_type   = "Interface"
@@ -221,6 +313,7 @@ resource "aws_vpc_endpoint" "bedrock_runtime" {
 }
 
 resource "aws_vpc_endpoint" "cloudwatch_logs" {
+  count = local.on
   vpc_id              = aws_vpc.main.id
   service_name        = "com.amazonaws.${var.aws_region}.logs"
   vpc_endpoint_type   = "Interface"
@@ -418,6 +511,7 @@ resource "aws_elasticache_subnet_group" "main" {
 }
 
 resource "aws_elasticache_cluster" "redis" {
+  count = local.on
   cluster_id           = "${var.project}-redis"
   engine               = "redis"
   node_type            = var.redis_node_type
@@ -452,7 +546,7 @@ resource "aws_db_instance" "postgres" {
   deletion_protection     = false 
   skip_final_snapshot     = false
   final_snapshot_identifier = "${var.project}-postgres-final-snapshot"
-  backup_retention_period = 7
+  backup_retention_period = 0
   backup_window           = "03:00-04:00"
   maintenance_window      = "sun:05:00-sun:06:00"
   tags                    = { Name = "${var.project}-postgres" }
@@ -466,6 +560,7 @@ resource "random_password" "db_password" {
 # ─── ALB ──────────────────────────────────────────────────────────────────────
 
 resource "aws_lb" "main" {
+  count = local.on
   name               = "${var.project}-alb"
   internal           = false
   load_balancer_type = "application"
@@ -474,6 +569,7 @@ resource "aws_lb" "main" {
 }
 
 resource "aws_lb_target_group" "app" {
+  count = local.on
   name        = "${var.project}-app-tg"
   port        = 8000
   protocol    = "HTTP"
@@ -488,6 +584,7 @@ resource "aws_lb_target_group" "app" {
 }
 
 resource "aws_lb_target_group" "pyrit" {
+  count = local.on
   name        = "${var.project}-pyrit-tg"
   port        = 8001
   protocol    = "HTTP"
@@ -502,7 +599,8 @@ resource "aws_lb_target_group" "pyrit" {
 }
 
 resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.main.arn
+  count = local.on
+  load_balancer_arn = aws_lb.main[0].arn
   port              = 80
   protocol          = "HTTP"
   default_action {
@@ -519,7 +617,7 @@ resource "aws_lb_listener" "http" {
       for_each = local.https_enabled ? [] : [1]
       content {
         target_group {
-          arn = aws_lb_target_group.app.arn
+          arn = aws_lb_target_group.app[0].arn
         }
       }
     }
@@ -527,25 +625,26 @@ resource "aws_lb_listener" "http" {
 }
 
 resource "aws_lb_listener" "https" {
-  count             = local.https_enabled ? 1 : 0
-  load_balancer_arn = aws_lb.main.arn
+  count             = local.running && local.https_enabled ? 1 : 0
+  load_balancer_arn = aws_lb.main[0].arn
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
   certificate_arn   = var.acm_certificate_arn
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.app.arn
+    target_group_arn = aws_lb_target_group.app[0].arn
   }
 }
 
 resource "aws_lb_listener" "pyrit" {
-  load_balancer_arn = aws_lb.main.arn
+  count = local.on
+  load_balancer_arn = aws_lb.main[0].arn
   port              = 8001
   protocol          = "HTTP"
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.pyrit.arn
+    target_group_arn = aws_lb_target_group.pyrit[0].arn
   }
 }
 
@@ -663,7 +762,7 @@ resource "aws_secretsmanager_secret_version" "config" {
     BEDROCK_GUARDRAIL_VERSION = aws_bedrock_guardrail_version.main.version
 
     # Infrastructure endpoints
-    REDIS_URL        = "redis://${aws_elasticache_cluster.redis.cache_nodes[0].address}:6379"
+    REDIS_URL        = local.redis_url
     TENSORZERO_URL   = "http://localhost:3000"
     DATABASE_URL     = "postgresql://dbadmin:${random_password.db_password.result}@${aws_db_instance.postgres.endpoint}/researchdb"
 
@@ -692,6 +791,12 @@ resource "aws_secretsmanager_secret_version" "config" {
     DB_POOL_MIN               = "2"
     DB_POOL_MAX               = "10"
   })
+
+  # API keys are filled in by hand in the console. Without this, any change to the values above
+  # (e.g. REDIS_URL going away on pause) would push a new version with REPLACE_ME keys again.
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
 }
 
 # ─── ECS Task Definitions ─────────────────────────────────────────────────────
@@ -707,10 +812,14 @@ resource "aws_ecs_task_definition" "app" {
   container_definitions = jsonencode([
     {
       name      = "app"
-      image     = var.app_image
+      image     = local.app_image
       essential = true
       portMappings = [{ containerPort = 8000, protocol = "tcp" }]
-      environment  = [{ name = "AWS_REGION", value = var.aws_region }]
+      environment = [
+        { name = "AWS_REGION", value = var.aws_region },
+        # Overrides REDIS_URL in the secret, which Terraform no longer rewrites (see secret version lifecycle)
+        { name = "REDIS_URL", value = local.redis_url }
+      ]
       dependsOn    = [{ containerName = "tensorzero", condition = "START" }]
       logConfiguration = {
         logDriver = "awslogs"
@@ -723,7 +832,7 @@ resource "aws_ecs_task_definition" "app" {
     },
     {
       name      = "tensorzero"
-      image     = var.tensorzero_image
+      image     = local.tensorzero_image
       essential = true
       portMappings = [{ containerPort = 3000, protocol = "tcp" }]
       secrets = [
@@ -752,13 +861,13 @@ resource "aws_ecs_task_definition" "pyrit" {
   task_role_arn            = aws_iam_role.ecs_task.arn
   container_definitions = jsonencode([{
     name      = "pyrit"
-    image     = var.pyrit_image
+    image     = local.pyrit_image
     essential = true
     portMappings = [{ containerPort = 8001, protocol = "tcp" }]
     environment = [
-      { name = "TARGET_URL", value = "http://${aws_lb.main.dns_name}" },
+      { name = "TARGET_URL", value = "http://${local.alb_dns}" },
       { name = "AWS_REGION", value = var.aws_region },
-      { name = "REDIS_URL",  value = "redis://${aws_elasticache_cluster.redis.cache_nodes[0].address}:6379" }
+      { name = "REDIS_URL",  value = local.redis_url }
     ]
     logConfiguration = {
       logDriver = "awslogs"
@@ -774,6 +883,7 @@ resource "aws_ecs_task_definition" "pyrit" {
 # ─── ECS Services ─────────────────────────────────────────────────────────────
 
 resource "aws_ecs_service" "app" {
+  count = local.on
   name            = "${var.project}-app"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.app.arn
@@ -785,7 +895,7 @@ resource "aws_ecs_service" "app" {
     assign_public_ip = true
   }
   load_balancer {
-    target_group_arn = aws_lb_target_group.app.arn
+    target_group_arn = aws_lb_target_group.app[0].arn
     container_name   = "app"
     container_port   = 8000
   }
@@ -795,6 +905,7 @@ resource "aws_ecs_service" "app" {
 }
 
 resource "aws_ecs_service" "pyrit" {
+  count = local.on
   name            = "${var.project}-pyrit"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.pyrit.arn
@@ -806,7 +917,7 @@ resource "aws_ecs_service" "pyrit" {
     assign_public_ip = true
   }
   load_balancer {
-    target_group_arn = aws_lb_target_group.pyrit.arn
+    target_group_arn = aws_lb_target_group.pyrit[0].arn
     container_name   = "pyrit"
     container_port   = 8001
   }
@@ -815,19 +926,21 @@ resource "aws_ecs_service" "pyrit" {
 # ─── ECS Auto-Scaling ─────────────────────────────────────────────────────────
 
 resource "aws_appautoscaling_target" "app" {
+  count = local.on
   max_capacity       = var.app_max_capacity
   min_capacity       = var.app_min_capacity
-  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.app.name}"
+  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.app[0].name}"
   scalable_dimension = "ecs:service:DesiredCount"
   service_namespace  = "ecs"
 }
 
 resource "aws_appautoscaling_policy" "app_cpu" {
+  count = local.on
   name               = "${var.project}-app-cpu-scaling"
   policy_type        = "TargetTrackingScaling"
-  resource_id        = aws_appautoscaling_target.app.resource_id
-  scalable_dimension = aws_appautoscaling_target.app.scalable_dimension
-  service_namespace  = aws_appautoscaling_target.app.service_namespace
+  resource_id        = aws_appautoscaling_target.app[0].resource_id
+  scalable_dimension = aws_appautoscaling_target.app[0].scalable_dimension
+  service_namespace  = aws_appautoscaling_target.app[0].service_namespace
   target_tracking_scaling_policy_configuration {
     predefined_metric_specification {
       predefined_metric_type = "ECSServiceAverageCPUUtilization"
@@ -864,12 +977,14 @@ resource "aws_ecr_repository" "tensorzero" {
 # ─── EventBridge (weekly red team) ───────────────────────────────────────────
 
 resource "aws_cloudwatch_event_rule" "weekly_redteam" {
+  count = local.on
   name                = "${var.project}-weekly-redteam"
   schedule_expression = "cron(0 2 ? * MON *)"
 }
 
 resource "aws_cloudwatch_event_target" "redteam_ecs" {
-  rule     = aws_cloudwatch_event_rule.weekly_redteam.name
+  count = local.on
+  rule     = aws_cloudwatch_event_rule.weekly_redteam[0].name
   arn      = aws_ecs_cluster.main.arn
   role_arn = aws_iam_role.eventbridge_ecs.arn
   ecs_target {
@@ -919,7 +1034,7 @@ resource "aws_iam_role_policy" "eventbridge_ecs_policy" {
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 
 output "alb_dns" {
-  value = aws_lb.main.dns_name
+  value = local.alb_dns
 }
 
 output "app_ecr_url" {
@@ -935,7 +1050,11 @@ output "tensorzero_ecr_url" {
 }
 
 output "redis_endpoint" {
-  value = aws_elasticache_cluster.redis.cache_nodes[0].address
+  value = local.running ? aws_elasticache_cluster.redis[0].cache_nodes[0].address : ""
+}
+
+output "paused" {
+  value = var.paused
 }
 
 output "db_endpoint" {
