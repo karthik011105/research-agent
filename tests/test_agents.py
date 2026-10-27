@@ -4,6 +4,7 @@ from langgraph.graph import END
 from app import agents
 from app.agents import (
     OrchestratorAgent, build_graph, cited_ids, clean_queries, initial_state, parse_json_object, sources_section,
+    strip_citations,
 )
 from app.tools.search import SearchUnavailable
 from tests.conftest import make_source
@@ -29,6 +30,11 @@ def test_sources_section_lists_only_cited_sources():
     section = sources_section("Claim [3]. Other [1].", sources)
     assert "[1] Page 1" in section and "[3] Page 3" in section and "[2]" not in section
     assert sources_section("No citations.", sources) == ""
+
+
+def test_strip_citations_removes_markers_and_sources_list():
+    old = "## Summary\nChips grew 20% [1] and [2, 3].\n\n## Sources\n[1] Old page — https://old.com"
+    assert strip_citations(old) == "## Summary\nChips grew 20% and."
 
 
 def _state(**overrides):

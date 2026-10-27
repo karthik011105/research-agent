@@ -111,6 +111,12 @@ def sources_section(report: str, sources: list[dict]) -> str:
     return "\n\n## Sources\n" + "\n".join(lines) if lines else ""
 
 
+def strip_citations(report: str) -> str:
+    """A previous report's [n] markers point at *its* sources, not this run's — remove them and its Sources list."""
+    report = re.split(r"\n#+\s*Sources\s*\n", report)[0]
+    return re.sub(r"\s?\[\d+(?:\s*,\s*\d+)*\]", "", report).rstrip()
+
+
 def _history_block(session_history: list[dict]) -> str:
     if not session_history:
         return ""
@@ -215,8 +221,9 @@ class WriterAgent:
         if ltm_context:
             ltm_section = (
                 f"\n\nPREVIOUS RESEARCH ON A RELATED TOPIC (use this as reference — "
-                f"build on it, correct outdated information, and highlight what has changed):\n"
-                f"{ltm_context[:2000]}"
+                f"build on it, correct outdated information, and highlight what has changed. "
+                f"It has no citations: anything you take from it must be confirmed by the current findings to be cited):\n"
+                f"{strip_citations(ltm_context)[:2000]}"
             )
         feedback_section = ""
         if critic_feedback:

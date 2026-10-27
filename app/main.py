@@ -3,7 +3,7 @@ import uuid
 import logging
 import traceback
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import date, datetime
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import Response, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -231,7 +231,15 @@ async def stats():
     keys = await redis_client.dbsize()
     cache_keys = len([k async for k in redis_client.scan_iter("semantic:*")])
     session_keys = len([k async for k in redis_client.scan_iter("session:*")])
+    search_cache_keys = len([k async for k in redis_client.scan_iter("search:*")])
+    searches_today = int(await redis_client.get(f"search_budget:{date.today().isoformat()}") or 0)
     return {
+        "search": {
+            "providers": [name for name, key in (("tavily", config.tavily_api_key), ("brave", config.brave_api_key)) if key],
+            "searches_today": searches_today,
+            "daily_limit": config.search_daily_limit,
+            "cached_queries": search_cache_keys,
+        },
         "redis": {
             "total_keys": keys,
             "cache_entries": cache_keys,
