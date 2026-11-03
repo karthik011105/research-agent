@@ -188,6 +188,9 @@
     async function submitResearch() {
       const topic = document.getElementById('topic').value.trim();
       if (!topic) return alert('Please enter a research topic.');
+      // use what's typed in the key box even if "Save Key" wasn't clicked
+      const typedKey = document.getElementById('api-key').value.trim();
+      if (typedKey && typedKey !== getApiKey()) saveApiKey();
       const format = document.getElementById('format').value;
       const sessionId = document.getElementById('session-id').value.trim();
       const fresh = document.getElementById('fresh').checked;
@@ -211,6 +214,9 @@
         });
         if (!resp.ok) {
           const err = await resp.json();
+          if (resp.status === 401) {
+            throw new Error('Invalid or missing API key. Use the app password (API_KEY in Secrets Manager → research-agent/config), not your Groq/Tavily/OpenAI key.');
+          }
           throw new Error(err.detail || 'Request failed');
         }
         const data = await resp.json();
