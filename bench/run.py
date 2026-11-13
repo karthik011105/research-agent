@@ -4,8 +4,10 @@
 
 - Skips runs that already finished for this label; retries errors (up to --max-attempts) and runs left
   "running" by a deploy. Running out of Groq quota doesn't use up an attempt.
-- When Groq asks to retry within a few minutes, it waits and continues (at most --max-quota-wait minutes in
-  total); when the daily token limit is really used up, it stops: run the same command the next day.
+- When Groq's daily token limit is reached it stops at once: run the same command the next day. (The app already
+  waits out per-minute limits; a "daily limit" error means the 24-hour token window is full. Groq's "retry in N
+  min" hint is only for that one small request - a full research run needs ~45k tokens - and waiting on it just
+  failed again, so the runner doesn't wait.)
 - Per topic the systems run in the order multi -> rag -> single, so the search snapshots (the judge's evidence)
   are complete before the no-search system is judged.
 - The API key comes from $API_KEY, else from the research-agent/config secret (never printed).
@@ -24,7 +26,6 @@ import httpx
 TOPICS = pathlib.Path(__file__).with_name("topics.json")
 STALE_AFTER_S = 25 * 60     # a "running" row older than this was lost (e.g. the task was replaced by a deploy)
 RUN_TIMEOUT_S = 20 * 60
-SHORT_QUOTA_WAIT_MIN = 20   # Groq "retry in N min" up to this: wait it out; longer means the day's quota is gone
 
 
 def api_key() -> str:
@@ -53,7 +54,7 @@ def quota_retry_minutes(error: str | None) -> int | None:
 
 
 def run_pass(client: httpx.Client, base: str, args, topics: list[dict], systems: list[str]) -> tuple[str, int]:
-    """One pass over the selection. Returns ("done", 0), ("quota_wait", minutes) or ("quota_stop", 0)."""
+    """One pass over the selection. Returns ("done", 0) or ("quota_stop", 0)."""
     for t in topics:
         for system in systems:
             runs = [r for r in client.get(f"{base}/bench/runs", params={"label": args.label}).json()["runs"]
@@ -80,9 +81,6 @@ def run_pass(client: httpx.Client, base: str, args, topics: list[dict], systems:
             print(f"{t['id']}/{system}: {result['status']} {m.get('latency_s', '-')}s acc={j.get('accuracy')} "
                   f"calls={m.get('llm_calls')} searches={m.get('paid_searches')} {result.get('error') or ''}", flush=True)
             if result["status"] == "error" and is_quota_error(result):
-                minutes = quota_retry_minutes(result.get("error"))
-                if minutes is not None and minutes <= SHORT_QUOTA_WAIT_MIN:
-                    return "quota_wait", minutes + 1
                 return "quota_stop", 0
     return "done", 0
 
@@ -95,7 +93,6 @@ def main() -> int:
     ap.add_argument("--topics", default="", help="comma-separated topic ids (default: all)")
     ap.add_argument("--set", default="", help="a named topic set from topics.json, e.g. small")
     ap.add_argument("--max-attempts", type=int, default=3)
-    ap.add_argument("--max-quota-wait", type=int, default=60, help="total minutes to wait for Groq quota")
     args = ap.parse_args()
 
     base = args.url.rstrip("/")
@@ -111,20 +108,12 @@ def main() -> int:
         topics = [t for t in topics if t["id"] in wanted]
     systems = [s for s in ("multi", "rag", "single") if s in args.systems.split(",")]
 
-    waited = 0
-    while True:
-        outcome, minutes = run_pass(client, base, args, topics, systems)
-        if outcome == "done":
-            print("Benchmark complete for this selection.")
-            return 0
-        if outcome == "quota_wait" and waited + minutes <= args.max_quota_wait:
-            waited += minutes
-            print(f"Groq quota: waiting {minutes} min, then continuing ({waited}/{args.max_quota_wait} min used)",
-                  flush=True)
-            time.sleep(minutes * 60)
-            continue
-        print("Groq daily token limit reached - stopping. Run the same command again tomorrow to continue.")
-        return 2
+    outcome, _ = run_pass(client, base, args, topics, systems)
+    if outcome == "done":
+        print("Benchmark complete for this selection.")
+        return 0
+    print("Groq daily token limit reached - stopping. Run the same command again tomorrow to continue.")
+    return 2
 
 
 def wait(client: httpx.Client, base: str, label: str, run_id: str) -> dict:
