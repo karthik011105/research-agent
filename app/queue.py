@@ -4,7 +4,8 @@ import redis.asyncio as aioredis
 from app.config import Config
 
 
-async def push_job(redis: aioredis.Redis, config: Config, topic: str, session_id: str, output_format: str, fresh: bool = False) -> str:
+async def push_job(redis: aioredis.Redis, config: Config, topic: str, session_id: str, output_format: str,
+                   fresh: bool = False, monitor_id: str = "") -> str:
     job_id = str(uuid.uuid4())
     await redis.xadd(config.stream_key, {
         "job_id": job_id,
@@ -12,6 +13,7 @@ async def push_job(redis: aioredis.Redis, config: Config, topic: str, session_id
         "session_id": session_id,
         "output_format": output_format,
         "fresh": "1" if fresh else "0",
+        "monitor_id": monitor_id,          # set when a topic monitor queued this job (Step 6b)
     })
     return job_id
 

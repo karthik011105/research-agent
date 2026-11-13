@@ -328,6 +328,8 @@ async def run_panel(config: Config, report: str, sources: list[dict], debate: bo
             active = [c for c in disputed if budget[c.id] >= round_no and c.id not in _settled(c, fc, sk, sources)]
             for c in active:
                 debated.add(c.id)
+                from app import progress
+                await progress.emit("debating", round=round_no, claim=c.text[:140], kind=c.kind)
                 new_fc = await _ask(call, config, "critic_fact", debate_prompt("fact_checker", c, fc[c.id], sk[c.id], "skeptic"))
                 new_sk = await _ask(call, config, "critic_skeptic", debate_prompt("skeptic", c, sk[c.id], fc[c.id], "fact_checker"))
                 calls += 2

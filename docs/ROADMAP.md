@@ -226,6 +226,16 @@ Already visible in the tests: verified-only writes help only when the critic cau
 
 **Done when:** the UI shows live progress, and a monitored topic produces a dated diff.
 
+**Status (2026-11-13): built, not yet run live.**
+- 6a: `app/progress.py`.
+  - Every agent emits events into a Redis stream per job.
+  - `GET /stream/{job_id}` relays them as SSE, replays earlier events, and sends a keep-alive every 15 s for the ALB.
+  - The UI shows a live timeline (read with fetch, because EventSource can't send the API key), with 🛡 lines when a defense fires.
+- 6b: `app/monitoring.py`.
+  - An in-app scheduler (no extra AWS service) uses a Redis lock per time slot, so a topic runs once even with several tasks.
+  - The "what changed" diff of claims is computed by code, with no LLM tokens.
+  - At most 5 topics, at least every 6 hours apart. `/monitors` endpoints and a UI section.
+
 ## Step 7: Publish (1–2 sessions)
 - [ ] README with an architecture diagram and the benchmark, critic, learning and security results.
 - [ ] Write-up: *"Where do multi-agent research systems break? Benchmarking accuracy, learned critic debate, and attack propagation."*

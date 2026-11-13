@@ -6,7 +6,7 @@ import traceback
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from fastapi import FastAPI, HTTPException, Request, Depends
-from fastapi.responses import Response, FileResponse
+from fastapi.responses import StreamingResponse, Response, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import redis.asyncio as aioredis
@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 from app.config import Config
 from app.pool import init_pool, close_pool, get_pool
 from app.bench import CRITIC_MODES, SYSTEMS, PostgresBenchStore, execute_critic_eval, execute_run, new_run
+from app import progress
+from app.monitoring import MAX_MONITORS, MIN_INTERVAL_HOURS, PostgresMonitorStore, schedule_due, what_changed
 from app.learning import LearningService, PostgresLearningStore, outcome_parts
 from app.security.attacks import ATTACKS, ATTACKS_BY_ID
 from app.security.memory_poisoning import DEFENSE_SETTINGS
@@ -104,24 +106,35 @@ async def _process_job(data: dict, msg_id: str):
     session_id = data["session_id"]
     output_format = data.get("output_format", "text")
     fresh = data.get("fresh") == "1"
+    monitor_id = data.get("monitor_id") or ""
     log = logging.getLogger(f"job.{job_id[:8]}")
     job_started = time.monotonic()
+    progress_token = progress.use(progress.RedisProgress(redis_client, job_id))
+
+    async def publish(result: dict) -> None:
+        """Stores the job's result and ends its live progress stream with the matching final event."""
+        await set_result(redis_client, config, job_id, result)
+        status = result.get("status")
+        await progress.emit(status if status in progress.FINAL_EVENTS else "done",
+                            **({"origin": result.get("origin")} if status == "done" else {"error": result.get("error")}))
+
     try:
         attempt = await start_attempt(redis_client, job_id)
         if attempt > config.job_max_attempts:
             log.error(f"Giving up after {attempt - 1} interrupted attempts")
-            await set_result(redis_client, config, job_id, {
+            await publish({
                 "status": "error",
                 "error": "The research job was interrupted repeatedly (server restarts). Please submit it again.",
             })
             return
         log.info(f"Starting job for topic: {topic}" + (f" (attempt {attempt})" if attempt > 1 else ""))
+        await progress.emit("started", topic=topic, attempt=attempt)
 
         # Greetings / "who are you?" are not research topics: answer instantly, spend no searches or LLM calls
         direct = quick_reply(topic)
         if direct:
             log.info("Not a research topic - instant reply")
-            await set_result(redis_client, config, job_id, _direct_result(topic, direct))
+            await publish(_direct_result(topic, direct))
             return
 
         # Fetch session history before any branch — agent always receives it
@@ -133,11 +146,13 @@ async def _process_job(data: dict, msg_id: str):
         if hit:
             log.info("Cache hit")
             origin = "cache"
+            await progress.emit("memory_hit", where="cache")
         elif not fresh:
             hit = await ltm_search(config, topic, session_id)
             if hit:
                 log.info("LTM hit")
                 origin = "memory"
+                await progress.emit("memory_hit", where="long-term memory")
 
         if hit:
             report_text, sources = hit["report"], hit.get("sources") or []
@@ -153,9 +168,8 @@ async def _process_job(data: dict, msg_id: str):
             if final_state.get("direct_reply"):
                 # Planner judged it not a research topic: no report to cache, remember or evaluate
                 ok, reason, _ = await validate_output(config, final_state["direct_reply"])
-                await set_result(redis_client, config, job_id,
-                                 _direct_result(topic, final_state["direct_reply"]) if ok
-                                 else {"status": "blocked", "error": reason})
+                await publish(_direct_result(topic, final_state["direct_reply"]) if ok
+                              else {"status": "blocked", "error": reason})
                 return
             report_text = final_state["report"]
             live_sources = final_state["live_sources"]
@@ -163,13 +177,15 @@ async def _process_job(data: dict, msg_id: str):
             search_rounds = final_state["search_rounds"]
             sub_questions = [sq["question"] for sq in final_state["sub_questions"]] if live_sources else []
             scraped_count = final_state["scraped_count"]
+            await progress.emit("safety_check")
             ok, reason, policies = await validate_output(config, report_text)
             if not ok:
                 log.info(f"Output guardrail blocked the report ({policies}) - asking the writer for a safer draft")
+                await progress.emit("defense", what="output_guardrail", policies=policies)
                 report_text = await rewrite_for_safety(config, final_state, policies)
                 ok, reason, policies = await validate_output(config, report_text)
             if not ok:
-                await set_result(redis_client, config, job_id, {"status": "blocked", "error": reason})
+                await publish({"status": "blocked", "error": reason})
                 return
             if memory_write_allowed(config, final_state):
                 await cache_set(redis_client, config, topic, report_text, sources, session_id)
@@ -201,9 +217,19 @@ async def _process_job(data: dict, msg_id: str):
             "providers_used": sorted({s.get("provider", "") for s in sources} - {""}),
             "scraped_count": scraped_count,
             "writer_variant": (final_state.get("writer_variant") or "") if origin == "pipeline" else "",
+            "monitor_id": monitor_id,
             # page text stays server-side; the client only needs what it shows
             "sources": [{k: s.get(k, "") for k in ("id", "title", "url", "published_date", "provider", "kind")} for s in sources],
         }
+
+        if monitor_id:
+            # Step 6b: compare with this monitor's previous report (code only, no LLM)
+            try:
+                result["changes"] = what_changed(await monitor_store.last_report(monitor_id), report_text)
+                await monitor_store.record_run(monitor_id, job_id, report_text, result["changes"])
+                await progress.emit("changes", new=len(result["changes"]["new"]), dropped=len(result["changes"]["dropped"]))
+            except Exception as e:
+                log.warning(f"Could not record monitor run: {e}")
 
         # Per-query evaluation runs automatically on every job
         asyncio.create_task(evaluate_report(config, job_id, topic, report_text, sources))
@@ -214,19 +240,20 @@ async def _process_job(data: dict, msg_id: str):
         elif output_format == "json":
             result["structured"] = generate_json_report(topic, report_text, job_id, datetime.utcnow(), result["sources"])
 
-        await set_result(redis_client, config, job_id, result)
+        await publish(result)
         log.info("Job completed successfully")
     except Exception as e:
         log.error(f"Job failed: {traceback.format_exc()}")
-        await set_result(redis_client, config, job_id, {"status": "error", "error": str(e)})
+        await publish({"status": "error", "error": str(e)})
     finally:
+        progress._emitter.reset(progress_token)
         if _inflight.pop(msg_id, None) is not None:   # not handed back during shutdown
             await ack_job(redis_client, config, msg_id)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_client, graph, bench_store, learning, rule_store, rulebook
+    global redis_client, graph, bench_store, learning, rule_store, rulebook, monitor_store
     if not config.guardrails_enabled:
         logger.warning("Bedrock guardrails are DISABLED (GUARDRAILS_ENABLED=false) - local development only")
     redis_client = await aioredis.from_url(config.redis_url, decode_responses=True)
@@ -244,9 +271,13 @@ async def lifespan(app: FastAPI):
     await rulebook.reload()
     graph = build_graph(config, redis_client, learning=learning, rulebook=rulebook)
     app.state.config = config
+    monitor_store = PostgresMonitorStore(get_pool())
+    await monitor_store.migrate()
     worker = asyncio.create_task(_worker_loop())
+    scheduler = asyncio.create_task(_monitor_loop())
     yield
     worker.cancel()                        # stop taking new jobs first
+    scheduler.cancel()
     await _hand_back_unfinished_jobs()
     await redis_client.aclose()
     await close_pool()
@@ -256,7 +287,7 @@ app = FastAPI(title="Research Agent API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -542,3 +573,79 @@ async def security_rule_decision(rule_id: str, decision: str):
     await rule_store.save(rule)
     await rulebook.reload()
     return {"id": rule_id, "status": rule["status"], "active_patterns": len(rulebook.patterns)}
+
+
+# ── Step 6a: live progress ───────────────────────────────────────────────────
+
+@app.get("/stream/{job_id}", dependencies=[Depends(require_api_key)])
+async def stream_progress(job_id: str):
+    """Server-Sent Events: the job's progress as it happens (earlier events are replayed first)."""
+    async def read(last_id: str, block_ms: int):
+        return await progress.read_events(redis_client, job_id, last_id, block_ms)
+    return StreamingResponse(progress.sse_events(read, job_id), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ── Step 6b: topic monitoring ────────────────────────────────────────────────
+
+monitor_store: PostgresMonitorStore | None = None
+MONITOR_CHECK_S = 600
+
+
+async def _enqueue_monitor(monitor: dict) -> str:
+    """A monitor run is a normal fresh research job, so it gets the live timeline, critics and memory like any other."""
+    return await push_job(redis_client, config, monitor["topic"], monitor["session_id"], "text", fresh=True,
+                          monitor_id=monitor["id"])
+
+
+async def _monitor_loop():
+    while True:
+        try:
+            queued = await schedule_due(monitor_store, redis_client, _enqueue_monitor)
+            if queued:
+                logger.info(f"Monitors queued: {queued}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Monitor check failed: {e}")
+        await asyncio.sleep(MONITOR_CHECK_S)
+
+
+class MonitorRequest(BaseModel):
+    topic: str = Field(min_length=3, max_length=500)
+    interval_hours: int = Field(default=24, ge=MIN_INTERVAL_HOURS, le=24 * 30)
+    session_id: str = ""
+
+
+@app.post("/monitors", dependencies=[Depends(require_api_key)])
+async def create_monitor(req: MonitorRequest):
+    ok, reason = await validate_input(config, req.topic)
+    if not ok:
+        raise HTTPException(status_code=400, detail=reason)
+    if len(await monitor_store.list_monitors()) >= MAX_MONITORS:
+        raise HTTPException(status_code=400, detail=f"At most {MAX_MONITORS} monitored topics (each run uses Groq quota)")
+    monitor = await monitor_store.create(req.topic, req.interval_hours, req.session_id or str(uuid.uuid4()))
+    return {**monitor, "first_run": "within 10 minutes"}
+
+
+@app.get("/monitors", dependencies=[Depends(require_api_key)])
+async def list_monitors():
+    monitors = await monitor_store.list_monitors()
+    out = []
+    for m in monitors:
+        runs = await monitor_store.runs(m["id"], limit=1)
+        out.append({**{k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in m.items()},
+                    "latest": runs[0] if runs else None})
+    return {"monitors": out, "max": MAX_MONITORS}
+
+
+@app.get("/monitors/{monitor_id}/runs", dependencies=[Depends(require_api_key)])
+async def monitor_runs(monitor_id: str):
+    return {"monitor_id": monitor_id, "runs": await monitor_store.runs(monitor_id)}
+
+
+@app.delete("/monitors/{monitor_id}", dependencies=[Depends(require_api_key)])
+async def delete_monitor(monitor_id: str):
+    if not await monitor_store.deactivate(monitor_id):
+        raise HTTPException(status_code=404, detail="no such monitor")
+    return {"id": monitor_id, "active": False}

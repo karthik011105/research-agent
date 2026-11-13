@@ -42,6 +42,12 @@
     .badge-live { background: #1f3d2b; color: #3fb950; }
     .badge-model { background: #3d2d1f; color: #d29922; }
     .badge-origin { background: #21262d; color: #8b949e; }
+    #timeline { margin: 4px 0 14px; padding: 10px 14px; background: #0d1117; border: 1px solid #21262d; border-radius: 8px; font-size: 0.85rem; max-height: 260px; overflow-y: auto; }
+    #timeline:empty { display: none; }
+    .tl { padding: 3px 0; color: #c9d1d9; }
+    .tl-time { color: #6e7681; font-size: 0.75rem; margin-right: 8px; font-variant-numeric: tabular-nums; }
+    .tl-defense { color: #3fb950; }
+    .tl-error { color: #f85149; }
     #sources-box { margin-top: 14px; font-size: 0.85rem; }
     #sources-box ol { padding-left: 0; list-style: none; }
     #sources-box li { padding: 6px 0; border-bottom: 1px solid #21262d; }
@@ -109,6 +115,7 @@
       <span id="source-badge"></span>
       <span style="color:#8b949e;font-size:0.8rem;margin-left:10px" id="job-id-label"></span>
     </div>
+    <div id="timeline" aria-live="polite"></div>
     <div id="report-box" style="display:none"></div>
     <div id="subq-box" style="display:none"></div>
     <div id="sources-box" style="display:none"></div>
@@ -123,7 +130,24 @@
       <button class="btn btn-secondary" onclick="sendFeedback(-1)" title="Poor report">👎</button>
       <span id="feedback-status" style="color:#8b949e;font-size:0.8rem"></span>
     </div>
+    <div class="actions" id="monitor-actions" style="display:none;align-items:center">
+      <button class="btn btn-secondary" onclick="monitorTopic()" title="Re-research this topic on a schedule and show what changed">📡 Monitor this topic</button>
+      <select id="monitor-interval" style="width:auto">
+        <option value="24">every day</option>
+        <option value="12">every 12 hours</option>
+        <option value="168">every week</option>
+      </select>
+      <span id="monitor-status" style="color:#8b949e;font-size:0.8rem"></span>
+    </div>
     <div id="diff-box" style="display:none;margin-top:14px"></div>
+  </div>
+
+  <div class="card">
+    <div class="section-title">Monitored topics
+      <button class="btn btn-secondary" style="float:right;font-size:0.8rem;padding:4px 12px" onclick="loadMonitors()">Refresh</button>
+    </div>
+    <p style="color:#8b949e;font-size:0.8rem;margin-bottom:12px">Each monitored topic is re-researched on its schedule; the latest run shows what changed since the one before.</p>
+    <div id="monitors-box"><p style="color:#8b949e;font-size:0.85rem">No monitored topics.</p></div>
   </div>
 
   <div class="card">
@@ -182,8 +206,140 @@
       box.style.display = 'block';
     }
 
+    // ── Live progress (Step 6a): Server-Sent Events read with fetch, since EventSource can't send the API key ──
+    let streamAbort = null;
+
+    const kindNames = { web: 'web', news: 'news', paper: 'papers', community: 'community' };
+
+    function describeEvent(e) {
+      switch (e.type) {
+        case 'started': return ['🚀', 'Started'];
+        case 'memory_hit': return ['💾', `Found a recent answer in ${e.where}`];
+        case 'planning': return ['🧭', 'Planning the research…'];
+        case 'direct_answer': return ['💬', 'Not a research topic — answering directly'];
+        case 'planned': return ['📋', `Plan: ${e.sub_questions.length} sub-question${e.sub_questions.length === 1 ? '' : 's'} — ` +
+                                      e.sub_questions.map(q => q.question).join(' · ')];
+        case 'searching': return ['🔎', `Searching (${(e.kinds || []).map(k => kindNames[k] || k).join(', ')}) for: ${e.question}`];
+        case 'searched': return ['🔎', `Sub-question ${e.subq}: ${e.results} results` + (e.failed ? ` (${e.failed} search${e.failed === 1 ? '' : 'es'} failed)` : '')];
+        case 'sources': return ['📚', `${e.total} sources (${(e.kinds || []).map(k => kindNames[k] || k).join(', ')})` +
+                                      (e.read_in_full ? `, ${e.read_in_full} read in full` : '')];
+        case 'extracting': return ['🧪', `Extracting facts for sub-question ${e.subq} from ${e.sources} sources…`];
+        case 'extracted': return ['🧪', `Sub-question ${e.subq}: ${e.facts} facts`];
+        case 'gap': return ['🧩', `Something is missing — searching again: ${(e.queries || []).join(' · ')}`];
+        case 'writing': return ['📝', e.revising ? `Rewriting (draft ${e.draft}) with the reviewers' fixes…` : `Writing draft ${e.draft}…`];
+        case 'checking': return ['⚖️', e.mode === 'single' ? 'Fact-checking the draft…' : 'Two critics are checking every claim…'];
+        case 'debating': return ['🗣️', `Critics disagree — debate round ${e.round}: “${e.claim}”`];
+        case 'checked': return ['⚖️', e.passed ? 'Fact-check passed' :
+                                      `Fact-check: ${e.needs_work} claim${e.needs_work === 1 ? '' : 's'} need${e.needs_work === 1 ? 's' : ''} fixing` +
+                                      (e.debated ? `, ${e.debated} debated` : '')];
+        case 'safety_check': return ['🛡️', 'Safety check…'];
+        case 'defense': return ['🛡️', {
+              blocked_domains: `Blocked ${e.count} low-quality source${e.count === 1 ? '' : 's'}`,
+              injection_rule: `Removed suspected prompt injection from ${e.count} page${e.count === 1 ? '' : 's'}`,
+              output_guardrail: 'Safety filter flagged the draft — rewriting it more carefully' }[e.what] || 'Defense triggered'];
+        case 'done': return ['✅', 'Done'];
+        case 'blocked': return ['⛔', `Blocked: ${e.error || ''}`];
+        case 'error': return ['❌', `Error: ${e.error || ''}`];
+        default: return null;
+      }
+    }
+
+    function addTimelineEntry(e, startedAt) {
+      const d = describeEvent(e);
+      if (!d) return;
+      const box = document.getElementById('timeline');
+      const row = document.createElement('div');
+      row.className = 'tl' + (e.type === 'defense' ? ' tl-defense' : (e.type === 'error' || e.type === 'blocked') ? ' tl-error' : '');
+      const secs = startedAt ? Math.max(0, Math.round(e.t - startedAt)) : 0;
+      row.innerHTML = `<span class="tl-time">${String(Math.floor(secs / 60)).padStart(1, '0')}:${String(secs % 60).padStart(2, '0')}</span>${d[0]} ${esc(d[1])}`;
+      box.appendChild(row);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    async function streamProgress(jobId) {
+      if (streamAbort) streamAbort.abort();
+      streamAbort = new AbortController();
+      const box = document.getElementById('timeline');
+      box.innerHTML = '';
+      let startedAt = null;
+      try {
+        const resp = await fetch(`${API}/stream/${jobId}`, { headers: authHeaders(), signal: streamAbort.signal });
+        if (!resp.ok || !resp.body) return;              // the result still arrives by polling
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let cut;
+          while ((cut = buffer.indexOf('\n\n')) >= 0) {
+            const chunk = buffer.slice(0, cut);
+            buffer = buffer.slice(cut + 2);
+            const data = chunk.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6)).join('\n');
+            if (!data) continue;                          // keep-alive comment
+            const event = JSON.parse(data);
+            if (startedAt === null && event.t) startedAt = event.t;
+            addTimelineEntry(event, startedAt);
+          }
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') console.warn('progress stream ended', e);
+      }
+    }
+
     function getApiKey() {
       return localStorage.getItem('research_agent_api_key') || '';
+    }
+
+    // ── Topic monitoring (Step 6b) ──
+    async function monitorTopic() {
+      const status = document.getElementById('monitor-status');
+      const hours = parseInt(document.getElementById('monitor-interval').value, 10);
+      try {
+        const resp = await fetch(`${API}/monitors`, {
+          method: 'POST', headers: authHeaders(),
+          body: JSON.stringify({ topic: lastTopic, interval_hours: hours, session_id: currentSessionId || '' })
+        });
+        const out = await resp.json();
+        status.textContent = resp.ok ? `Monitoring - first run ${out.first_run}.` : (out.detail || 'Could not start monitoring.');
+        if (resp.ok) loadMonitors();
+      } catch (e) {
+        status.textContent = 'Could not start monitoring.';
+      }
+    }
+
+    async function stopMonitor(id) {
+      await fetch(`${API}/monitors/${id}`, { method: 'DELETE', headers: authHeaders() });
+      loadMonitors();
+    }
+
+    function changesHtml(c) {
+      if (!c) return '<span class="src-meta">Not run yet.</span>';
+      if (c.first_run) return '<span class="src-meta">First run - nothing to compare yet.</span>';
+      const list = (items, sign, colour) => items.map(x => `<li style="color:${colour}">${sign} ${esc(x)}</li>`).join('');
+      if (!c.new.length && !c.dropped.length) return '<span class="src-meta">No changes since the previous run.</span>';
+      return `<ul style="margin:6px 0 0 18px;font-size:0.8rem">${list(c.new, '+', '#3fb950')}${list(c.dropped, '−', '#8b949e')}</ul>`;
+    }
+
+    async function loadMonitors() {
+      const box = document.getElementById('monitors-box');
+      try {
+        const resp = await fetch(`${API}/monitors`, { headers: authHeaders() });
+        if (!resp.ok) return;
+        const { monitors } = await resp.json();
+        if (!monitors.length) {
+          box.innerHTML = '<p style="color:#8b949e;font-size:0.85rem">No monitored topics.</p>';
+          return;
+        }
+        box.innerHTML = monitors.map(m => `
+          <div style="padding:8px 0;border-bottom:1px solid #21262d">
+            <strong>${esc(m.topic)}</strong>
+            <span class="src-meta"> · every ${m.interval_hours} h · last run ${m.last_run_at ? esc(m.last_run_at.slice(0, 16).replace('T', ' ')) : 'pending'}</span>
+            <button class="btn btn-secondary" style="float:right;font-size:0.75rem;padding:2px 10px" onclick="stopMonitor('${esc(m.id)}')">Stop</button>
+            <div>${changesHtml(m.latest && m.latest.changes)}</div>
+          </div>`).join('');
+      } catch (e) { /* the monitors list is optional */ }
     }
 
     async function sendFeedback(rating) {
@@ -271,6 +427,7 @@
         document.getElementById('job-status').textContent = 'Processing...';
         if (pollInterval) clearInterval(pollInterval);
         pollInterval = setInterval(pollResult, 3000);
+        streamProgress(currentJobId);
       } catch (e) {
         document.getElementById('job-status').className = 'status status-error';
         document.getElementById('job-status').textContent = `Error: ${e.message}`;
@@ -302,6 +459,9 @@
           document.querySelectorAll('#feedback-actions button').forEach(b => b.disabled = false);
           document.getElementById('feedback-actions').style.display = data.origin === 'pipeline' ? 'flex' : 'none';
           loadSession();
+          document.getElementById('monitor-status').textContent = '';
+          document.getElementById('monitor-actions').style.display = data.monitor_id ? 'none' : 'flex';
+          if (data.changes) loadMonitors();
         } else if (data.status === 'blocked') {
           document.getElementById('job-status').className = 'status status-blocked';
           document.getElementById('job-status').textContent = `Blocked: ${data.error}`;
@@ -370,6 +530,7 @@
       document.getElementById('session-id').value = '';
       document.getElementById('session-box').innerHTML = '<p style="color:#8b949e;font-size:0.85rem">No session active.</p>';
     }
+    loadMonitors();
   </script>
 </body>
 </html>

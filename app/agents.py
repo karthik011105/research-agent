@@ -10,7 +10,7 @@ import redis.asyncio as aioredis
 from langgraph.graph import StateGraph, END, START
 from langgraph.types import Send
 from langsmith import traceable
-from app import metering
+from app import metering, progress
 from app.config import Config
 from app.retry import with_retry
 from app.tools.scrape import enrich_sources
@@ -541,7 +541,13 @@ class OrchestratorAgent:
 
     @traceable(run_type="chain", name="orchestrator:plan")
     async def plan_node(self, state: ResearchState) -> dict:
+        await progress.emit("planning")
         plan, direct_reply = await self.planner.run(state["topic"], state.get("session_history", []))
+        if direct_reply:
+            await progress.emit("direct_answer")
+        else:
+            await progress.emit("planned", sub_questions=[{"id": sq["id"], "question": sq["question"],
+                                                           "kinds": sq["kinds"]} for sq in plan])
         return {"sub_questions": plan, "round_subq_ids": [sq["id"] for sq in plan], "direct_reply": direct_reply}
 
     def _search_sends(self, state: ResearchState, web_limit: int) -> list[Send] | str:
@@ -560,6 +566,8 @@ class OrchestratorAgent:
     @traceable(run_type="chain", name="orchestrator:search_branch")
     async def search_branch(self, task: SearchTask) -> dict:
         subq = task["subq"]
+        await progress.emit("searching", subq=subq["id"], question=subq["question"],
+                            kinds=sorted({kind for _, kind, _ in task["calls"]}), queries=len(task["calls"]))
         outcomes = await asyncio.gather(
             *((self.search_fn or search_kind)(self.redis, self.config, q, kind, allow_paid=paid)
               for q, kind, paid in task["calls"]),
@@ -571,6 +579,7 @@ class OrchestratorAgent:
             if isinstance(o, Exception):
                 logger.warning(f"Sub-question {subq['id']}: '{q}' ({kind}) failed: {o}")
         results = [{**r, "subq": subq["id"]} for r in interleave(ok)]
+        await progress.emit("searched", subq=subq["id"], results=len(results), failed=len(errors))
         return {"raw_results": [{"round": task["round"], "subq": subq["id"], "results": results,
                                  "error": errors[0] if errors and not ok else ""}]}
 
@@ -580,16 +589,25 @@ class OrchestratorAgent:
         batch = sorted((r for r in state["raw_results"] if r["round"] == round_no), key=lambda r: r["subq"])
         existing = state["sources"]
         # Low-quality domains go first, so they never take a slot or a scrape
-        candidates = drop_blocked(dedupe_new([r["results"] for r in batch], existing), self.config.blocked_domains)
+        unique = dedupe_new([r["results"] for r in batch], existing)
+        candidates = drop_blocked(unique, self.config.blocked_domains)
+        if len(candidates) < len(unique):
+            await progress.emit("defense", what="blocked_domains", count=len(unique) - len(candidates))
         # Scrape only what can still make the cut, plus a few spares for pages that fail to scrape
         room = max(0, self.config.search_max_sources - len(existing))
         window = await enrich_sources(self.redis, self.config, candidates[:room + self.config.scrape_max_pages])
         if self.rulebook is not None and self.rulebook.patterns:
             from app.security.rules import sanitize_sources
             window = sanitize_sources(window, self.rulebook.patterns)
+            cleaned = sum(1 for s in window if s.get("sanitized"))
+            if cleaned:
+                await progress.emit("defense", what="injection_rule", count=cleaned)
         # A GDELT entry is only a headline until its article is scraped - not worth citing on its own
         window = [s for s in window if s["provider"] != "gdelt" or s.get("scraped")]
         sources = merge_sources([window], existing, self.config)
+        await progress.emit("sources", total=len(sources), new=len(sources) - len(existing),
+                            read_in_full=sum(1 for s in sources if s.get("scraped")),
+                            kinds=sorted({s.get("kind", "web") for s in sources}))
         update = {
             "sources": sources,
             "live_sources": bool(sources),
@@ -618,7 +636,9 @@ class OrchestratorAgent:
     @traceable(run_type="chain", name="orchestrator:extract_branch")
     async def extract_branch(self, task: ExtractTask) -> dict:
         async with self.llm_slots:
+            await progress.emit("extracting", subq=task["subq"]["id"], sources=len(task["sources"]))
             facts = await self.extract_agent.run(task["topic"], task["sources"], task["subq"]["question"])
+        await progress.emit("extracted", subq=task["subq"]["id"], facts=facts.count("\n- ") + facts.startswith("- "))
         return {"branch_facts": [{"subq": task["subq"]["id"], "question": task["subq"]["question"], "facts": facts}]}
 
     @traceable(run_type="chain", name="orchestrator:summarize")
@@ -639,6 +659,7 @@ class OrchestratorAgent:
         if not queries:
             return {"needs_more": False}
         logger.info(f"Gap check: searching again with {queries} ({kinds[0]})")
+        await progress.emit("gap", queries=queries, kind=kinds[0])
         gap = SubQuestion(id=len(state["sub_questions"]) + 1, question=f"Additional findings: {queries[0]}",
                           queries=queries, kinds=kinds)
         return {"needs_more": True, "sub_questions": state["sub_questions"] + [gap], "round_subq_ids": [gap["id"]]}
@@ -651,6 +672,7 @@ class OrchestratorAgent:
         # One variant per job (rewrites keep it), never in benchmark runs: those pin the strict writer
         variant = state.get("writer_variant") or (
             self.learning.choose_writer() if self.learning and not metering.active() else None) or ""
+        await progress.emit("writing", draft=state.get("iterations", 0) + 1, revising=bool(state.get("critic_feedback")))
         report = await self.writer_agent.run(
             state["topic"],
             state["facts"],
@@ -668,6 +690,7 @@ class OrchestratorAgent:
         mode = self.config.critic_mode
         if mode in ("panel", "debate") and state["live_sources"]:
             from app.critics import run_panel
+            await progress.emit("checking", mode=mode)
             trust, policy = self.learning.critic_learners() if self.learning else (None, None)
             result = await run_panel(self.config, state["report"], state["sources"], debate=(mode == "debate"),
                                      trust=trust, policy=policy)
@@ -675,8 +698,14 @@ class OrchestratorAgent:
                         f"{len(result.claims)} claims need work, {sum(c['debated'] for c in result.claims)} debated")
             if self.learning:
                 await self.learning.apply_trust_events(result.trust_events)
+            await progress.emit("checked", mode=mode, passed=result.passed, claims=len(result.claims),
+                                needs_work=sum(c["decision"] != "keep" for c in result.claims),
+                                debated=sum(c["debated"] for c in result.claims))
             return {"verified": result.passed, "critic_feedback": result.feedback, "claim_verdicts": result.claims}
+        await progress.emit("checking", mode="single")
         verified, feedback = await self.critic_agent.run(state["report"], state["sources"])
+        await progress.emit("checked", mode="single", passed=verified,
+                            needs_work=0 if verified else max(1, feedback.count("\n- ") + feedback.startswith("- ")))
         return {"verified": verified, "critic_feedback": feedback, "claim_verdicts": []}
 
     def route_after_verify(self, state: ResearchState) -> str:
