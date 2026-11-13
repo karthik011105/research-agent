@@ -48,3 +48,17 @@ def test_markdown_marks_the_best_value_per_row():
     assert acc_line.endswith("| **9.0** |")
     unsupported = next(line for line in md.splitlines() if line.startswith("| Unsupported"))
     assert "| **1.0** |" in unsupported                                  # lower is better
+
+
+def _runner():
+    spec = importlib.util.spec_from_file_location("bench_run", ROOT / "bench" / "run.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_runner_quota_helpers():
+    run = _runner()
+    err = "RuntimeError: LLM daily limit reached for all models (retry in 6 min)"
+    assert run.is_quota_error({"error": err}) and not run.is_quota_error({"error": "ValueError: boom"})
+    assert run.quota_retry_minutes(err) == 6 and run.quota_retry_minutes("no hint") is None

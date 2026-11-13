@@ -3,7 +3,9 @@
     python bench/run.py --url http://<alb_dns> [--label v1] [--set small | --topics n1,t4] [--systems multi,rag,single]
 
 - Skips runs that already finished for this label; retries errors (up to --max-attempts) and runs left
-  "running" by a deploy. Stops cleanly when Groq's daily limit is reached: run it again the next day.
+  "running" by a deploy. Running out of Groq quota doesn't use up an attempt.
+- When Groq asks to retry within a few minutes, it waits and continues (at most --max-quota-wait minutes in
+  total); when the daily token limit is really used up, it stops: run the same command the next day.
 - Per topic the systems run in the order multi -> rag -> single, so the search snapshots (the judge's evidence)
   are complete before the no-search system is judged.
 - The API key comes from $API_KEY, else from the research-agent/config secret (never printed).
@@ -12,6 +14,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -21,6 +24,7 @@ import httpx
 TOPICS = pathlib.Path(__file__).with_name("topics.json")
 STALE_AFTER_S = 25 * 60     # a "running" row older than this was lost (e.g. the task was replaced by a deploy)
 RUN_TIMEOUT_S = 20 * 60
+SHORT_QUOTA_WAIT_MIN = 20   # Groq "retry in N min" up to this: wait it out; longer means the day's quota is gone
 
 
 def api_key() -> str:
@@ -39,6 +43,50 @@ def age_s(iso: str | None) -> float:
     return (datetime.now(timezone.utc) - started).total_seconds()
 
 
+def is_quota_error(run: dict) -> bool:
+    return "daily limit" in (run.get("error") or "").lower()
+
+
+def quota_retry_minutes(error: str | None) -> int | None:
+    m = re.search(r"retry in (\d+) min", error or "")
+    return int(m.group(1)) if m else None
+
+
+def run_pass(client: httpx.Client, base: str, args, topics: list[dict], systems: list[str]) -> tuple[str, int]:
+    """One pass over the selection. Returns ("done", 0), ("quota_wait", minutes) or ("quota_stop", 0)."""
+    for t in topics:
+        for system in systems:
+            runs = [r for r in client.get(f"{base}/bench/runs", params={"label": args.label}).json()["runs"]
+                    if r["topic_id"] == t["id"] and r["system"] == system]
+            if any(r["status"] == "done" for r in runs):
+                continue
+            live = [r for r in runs if r["status"] == "running" and age_s(r["started_at"]) < STALE_AFTER_S]
+            if live:
+                print(f"{t['id']}/{system}: already running, waiting")
+                run_id = live[0]["id"]
+            else:
+                # running out of quota says nothing about the run, so it doesn't count as an attempt
+                attempts = [r for r in runs if r["status"] != "running" and not is_quota_error(r)]
+                if len(attempts) >= args.max_attempts:
+                    print(f"{t['id']}/{system}: gave up after {len(attempts)} attempts: {attempts[-1].get('error')}")
+                    continue
+                r = client.post(f"{base}/bench/run", json={"label": args.label, "topic_id": t["id"],
+                                                           "topic": t["topic"], "system": system,
+                                                           "trap": bool(t.get("trap"))})
+                r.raise_for_status()
+                run_id = r.json()["id"]
+            result = wait(client, base, args.label, run_id)
+            m, j = result.get("metrics") or {}, result.get("judge") or {}
+            print(f"{t['id']}/{system}: {result['status']} {m.get('latency_s', '-')}s acc={j.get('accuracy')} "
+                  f"calls={m.get('llm_calls')} searches={m.get('paid_searches')} {result.get('error') or ''}", flush=True)
+            if result["status"] == "error" and is_quota_error(result):
+                minutes = quota_retry_minutes(result.get("error"))
+                if minutes is not None and minutes <= SHORT_QUOTA_WAIT_MIN:
+                    return "quota_wait", minutes + 1
+                return "quota_stop", 0
+    return "done", 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required=True)
@@ -46,8 +94,8 @@ def main() -> int:
     ap.add_argument("--systems", default="multi,rag,single")
     ap.add_argument("--topics", default="", help="comma-separated topic ids (default: all)")
     ap.add_argument("--set", default="", help="a named topic set from topics.json, e.g. small")
-    ap.add_argument("--max-runs", type=int, default=1000, help="stop after starting this many runs")
     ap.add_argument("--max-attempts", type=int, default=3)
+    ap.add_argument("--max-quota-wait", type=int, default=60, help="total minutes to wait for Groq quota")
     args = ap.parse_args()
 
     base = args.url.rstrip("/")
@@ -63,38 +111,20 @@ def main() -> int:
         topics = [t for t in topics if t["id"] in wanted]
     systems = [s for s in ("multi", "rag", "single") if s in args.systems.split(",")]
 
-    started = 0
-    for t in topics:
-        for system in systems:
-            runs = [r for r in client.get(f"{base}/bench/runs", params={"label": args.label}).json()["runs"]
-                    if r["topic_id"] == t["id"] and r["system"] == system]
-            if any(r["status"] == "done" for r in runs):
-                continue
-            live = [r for r in runs if r["status"] == "running" and age_s(r["started_at"]) < STALE_AFTER_S]
-            if live:
-                print(f"{t['id']}/{system}: already running, waiting")
-                run_id = live[0]["id"]
-            else:
-                if len(runs) >= args.max_attempts:
-                    print(f"{t['id']}/{system}: gave up after {len(runs)} attempts: {runs[-1].get('error')}")
-                    continue
-                if started >= args.max_runs:
-                    print(f"Reached --max-runs {args.max_runs}; run again to continue.")
-                    return 0
-                r = client.post(f"{base}/bench/run", json={"label": args.label, "topic_id": t["id"],
-                                                           "topic": t["topic"], "system": system,
-                                                           "trap": bool(t.get("trap"))})
-                r.raise_for_status()
-                run_id, started = r.json()["id"], started + 1
-            result = wait(client, base, args.label, run_id)
-            m, j = result.get("metrics") or {}, result.get("judge") or {}
-            print(f"{t['id']}/{system}: {result['status']} {m.get('latency_s', '-')}s acc={j.get('accuracy')} "
-                  f"calls={m.get('llm_calls')} searches={m.get('paid_searches')} {result.get('error') or ''}")
-            if result["status"] == "error" and "daily limit" in (result.get("error") or "").lower():
-                print("Groq daily limit reached - stopping. Run the same command again tomorrow to continue.")
-                return 2
-    print("Benchmark complete for this selection.")
-    return 0
+    waited = 0
+    while True:
+        outcome, minutes = run_pass(client, base, args, topics, systems)
+        if outcome == "done":
+            print("Benchmark complete for this selection.")
+            return 0
+        if outcome == "quota_wait" and waited + minutes <= args.max_quota_wait:
+            waited += minutes
+            print(f"Groq quota: waiting {minutes} min, then continuing ({waited}/{args.max_quota_wait} min used)",
+                  flush=True)
+            time.sleep(minutes * 60)
+            continue
+        print("Groq daily token limit reached - stopping. Run the same command again tomorrow to continue.")
+        return 2
 
 
 def wait(client: httpx.Client, base: str, label: str, run_id: str) -> dict:
