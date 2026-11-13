@@ -24,6 +24,15 @@ def config():
         critic_report_truncate=8000,
         agent_max_iterations=2,
         tensorzero_url="http://tensorzero.test",
+        enabled_providers=["tavily", "brave", "arxiv", "semantic_scholar", "gdelt", "hackernews"],
+        semantic_scholar_api_key="",
+        max_subquestions=3,
+        queries_per_subquestion=2,
+        scrape_max_pages=4,
+        scrape_min_chars=400,
+        scrape_timeout=5.0,
+        scrape_max_bytes=200_000,
+        llm_concurrency=2,
     )
 
 
@@ -34,11 +43,13 @@ async def redis():
     await client.aclose()
 
 
-def make_source(n: int, url: str | None = None, content: str | None = None) -> dict:
+def make_source(n: int, url: str | None = None, content: str | None = None,
+                provider: str = "tavily", kind: str = "web") -> dict:
     return {
         "title": f"Page {n}",
         "url": url or f"https://example.com/{n}",
-        "content": content if content is not None else f"Useful fact number {n}. " * 10,
+        "content": content if content is not None else f"Useful fact number {n}. " * 30,
         "published_date": "",
-        "provider": "tavily",
+        "provider": provider,
+        "kind": kind,
     }

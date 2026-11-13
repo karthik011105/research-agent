@@ -793,7 +793,7 @@ resource "aws_secretsmanager_secret_version" "config" {
     AGENT_MAX_ITERATIONS      = "2"
     CRITIC_REPORT_TRUNCATE    = "8000"
     SEARCH_MAX_RESULTS        = "5"
-    SEARCH_MAX_SOURCES        = "8"
+    SEARCH_MAX_SOURCES        = "12"
     SEARCH_MAX_QUERIES        = "4"
     SEARCH_MAX_ROUNDS         = "2"
     SEARCH_DAILY_LIMIT        = "40"

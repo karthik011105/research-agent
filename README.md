@@ -9,9 +9,11 @@ Give it a topic → it researches, writes a full report, safety-checks it, cache
 | Component | What It Does |
 |---|---|
 | **FastAPI** | REST API — receives topics, returns reports |
-| **LangGraph** | Multi-agent pipeline: Plan → Web Search → Extract → Gap Check → Write → Verify |
+| **LangGraph** | Map-reduce multi-agent pipeline: Plan → parallel Search per sub-question → Merge/Scrape → parallel Extract → Gap Check → Write → Verify |
 | **Tavily** (+ optional Brave) | Live web search — reports are built from today's pages, with `[n]` citations |
-| **TensorZero** | LLM gateway — routes to GPT-4o, falls back to Groq Llama-3 |
+| **arXiv · Semantic Scholar · GDELT · Hacker News** | Free extra sources: research papers, global news, community discussion |
+| **trafilatura** | Scrapes full article text for headline/snippet-only results (SSRF-guarded) |
+| **TensorZero** | LLM gateway — Groq gpt-oss-120b, falling back to gpt-oss-20b, then qwen3.8-27b |
 | **AWS Bedrock Guardrails** | Blocks harmful input and output automatically |
 | **Redis (ElastiCache)** | Semantic cache + session memory + job queue |
 | **PostgreSQL + pgvector (RDS)** | Long-term memory — stores reports as vectors, enables semantic search |
@@ -29,7 +31,9 @@ PROJECT/
 ├── app/
 │   ├── main.py           API, background worker, all endpoints
 │   ├── agents.py         LangGraph multi-agent graph
-│   ├── tools/search.py   Live web search (Tavily, Brave fallback), search cache, daily budget
+│   ├── tools/search.py   Search by source kind (web/news/paper/community), cache, daily budget
+│   ├── tools/providers.py arXiv, Semantic Scholar, GDELT, Hacker News clients
+│   ├── tools/scrape.py   Full-text scraper with SSRF protection
 │   ├── cache.py          Redis semantic cache
 │   ├── guardrails.py     Bedrock safety checks
 │   ├── memory.py         Session memory (Redis) + long-term memory (pgvector)
@@ -64,18 +68,21 @@ PROJECT/
 
 ---
 
+## How live search works
 
+1. **Plan** — the LLM splits the topic into up to 3 sub-questions, writes search queries for each, and picks the
+   source kinds that fit: `web`, `news`, `paper` (arXiv + Semantic Scholar) or `community` (Hacker News)
+2. **Search** — one LangGraph branch per sub-question runs its providers in parallel; free sources never touch the
+   Tavily budget, and paid web queries are capped per job (`SEARCH_MAX_QUERIES`)
+3. **Merge** — duplicates removed, sources numbered once (so citations never clash), headline-only results scraped
+   for their full text, max `SEARCH_MAX_SOURCES`
+4. **Extract** — one branch per sub-question pulls cited facts from *its* sources (max 2 LLM calls at a time, to stay
+   inside free-tier token limits)
+5. **Gap check** — if something important is missing, one extra round with a new sub-question (max 2 rounds)
+6. **Write** — report with inline `[n]` citations; the Sources list is appended by code, so URLs can't be invented
+7. **Verify** — the critic checks claims against the cited sources; on failure the writer rewrites with its feedback
 
-### How live search works
-
-1. **Plan** — the LLM turns the topic into up to 4 search queries (it is told today's date)
-2. **Search** — plain Python calls Tavily for each query in parallel (Brave if Tavily fails); duplicates removed, max 8 sources
-3. **Extract** — the LLM pulls facts from the sources, each tagged `[n]`
-4. **Gap check** — if something important is missing, one extra search round (max 2 rounds)
-5. **Write** — report with inline `[n]` citations; the Sources list is appended by code, so URLs can't be invented
-6. **Verify** — the critic checks claims against the cited sources; on failure the writer rewrites with its feedback
-
-Credit protection: identical queries are cached for 6 hours and searches are capped at `SEARCH_DAILY_LIMIT` (default 40/day). If search is unavailable, the report falls back to model knowledge instead of failing.
+Credit protection: identical queries are cached for 6 hours and searches are capped at `SEARCH_DAILY_LIMIT` (default 40/day). A free provider that answers 429 is skipped by every job until its cooldown ends. If search is unavailable, the report falls back to model knowledge instead of failing.
 
 Reports are reused from cache (1 hour) or long-term memory (`LTM_FRESH_HOURS`, default 24) unless **Fresh search** is ticked.
 

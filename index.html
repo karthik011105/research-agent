@@ -48,6 +48,12 @@
     #sources-box a { color: #58a6ff; text-decoration: none; }
     #sources-box a:hover { text-decoration: underline; }
     .src-meta { color: #8b949e; font-size: 0.75rem; word-break: break-all; }
+    .kind { display: inline-block; font-size: 0.7rem; padding: 1px 7px; border-radius: 10px; margin-right: 6px; background: #21262d; color: #c9d1d9; }
+    .kind-paper { background: #2d1f3d; color: #bc8cff; }
+    .kind-news { background: #3d2d1f; color: #d29922; }
+    .kind-community { background: #1f2d3d; color: #58a6ff; }
+    #subq-box { margin-top: 14px; font-size: 0.85rem; color: #c9d1d9; }
+    #subq-box ol { padding-left: 20px; margin: 0; }
   </style>
 </head>
 <body>
@@ -104,6 +110,7 @@
       <span style="color:#8b949e;font-size:0.8rem;margin-left:10px" id="job-id-label"></span>
     </div>
     <div id="report-box" style="display:none"></div>
+    <div id="subq-box" style="display:none"></div>
     <div id="sources-box" style="display:none"></div>
     <div class="actions" id="export-actions" style="display:none">
       <button class="btn btn-secondary" onclick="downloadPDF()">Download PDF</button>
@@ -141,15 +148,24 @@
         : '<span class="badge badge-model">Model knowledge only</span>')
         + (origin ? `<span class="badge badge-origin">${origin}</span>` : '');
 
+      const subqBox = document.getElementById('subq-box');
+      const subqs = data.sub_questions || [];
+      subqBox.innerHTML = subqs.length
+        ? '<div class="section-title" style="margin-bottom:8px">Research plan</div><ol>' + subqs.map(q => `<li>${esc(q)}</li>`).join('') + '</ol>'
+        : '';
+      subqBox.style.display = subqs.length ? 'block' : 'none';
+
       const box = document.getElementById('sources-box');
       const sources = data.sources || [];
       if (!sources.length) { box.style.display = 'none'; return; }
+      const kinds = { web: '🌐 web', news: '📰 news', paper: '📄 paper', community: '💬 community' };
       box.innerHTML = '<div class="section-title" style="margin-bottom:8px">Sources</div><ol>' + sources.map(s => {
         // only link real web URLs; anything else is shown as text
         const safe = /^https?:\/\//i.test(s.url);
         const title = safe ? `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title)}</a>` : esc(s.title);
+        const kind = kinds[s.kind] ? `<span class="kind kind-${s.kind}">${kinds[s.kind]}</span>` : '';
         const meta = [s.url, s.published_date, s.provider].filter(Boolean).map(esc).join(' · ');
-        return `<li>[${esc(s.id)}] ${title}<div class="src-meta">${meta}</div></li>`;
+        return `<li>[${esc(s.id)}] ${kind}${title}<div class="src-meta">${meta}</div></li>`;
       }).join('') + '</ol>';
       box.style.display = 'block';
     }

@@ -73,6 +73,22 @@ class Config:
         self.search_cache_ttl: int = int(data.get("SEARCH_CACHE_TTL", 21600))
         self.source_char_limit: int = int(data.get("SOURCE_CHAR_LIMIT", 1500))
 
+        # Multi-source research (Phase 1). Defaults live here because the secret's JSON is not managed by
+        # Terraform after creation — add a key to research-agent/config only to override one.
+        self.enabled_providers: list[str] = [
+            p.strip() for p in data.get(
+                "ENABLED_PROVIDERS", "tavily,brave,arxiv,semantic_scholar,gdelt,hackernews").split(",") if p.strip()
+        ]
+        self.semantic_scholar_api_key: str = data.get("SEMANTIC_SCHOLAR_API_KEY", "")
+        self.max_subquestions: int = int(data.get("MAX_SUBQUESTIONS", 3))
+        self.queries_per_subquestion: int = int(data.get("QUERIES_PER_SUBQUESTION", 2))
+        self.scrape_max_pages: int = int(data.get("SCRAPE_MAX_PAGES", 4))
+        self.scrape_min_chars: int = int(data.get("SCRAPE_MIN_CHARS", 400))
+        self.scrape_timeout: float = float(data.get("SCRAPE_TIMEOUT", 10))
+        self.scrape_max_bytes: int = int(data.get("SCRAPE_MAX_BYTES", 1_000_000))
+        # Parallel LLM calls per worker (extract branches); free-tier per-minute token limits are shared
+        self.llm_concurrency: int = int(data.get("LLM_CONCURRENCY", 2))
+
         # Agent tuning
         self.agent_report_truncate: int = int(data.get("AGENT_REPORT_TRUNCATE", 3000))
         self.agent_max_iterations: int = int(data.get("AGENT_MAX_ITERATIONS", 2))

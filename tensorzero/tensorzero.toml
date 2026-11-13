@@ -61,7 +61,7 @@ type = "chat_completion"
 model = "research_model"
 weight = 1.0
 temperature = 0.1
-max_tokens = 2500
+max_tokens = 1500
 system_template = "templates/research_extract_system.minijinja"
 
 [functions.research_verify]

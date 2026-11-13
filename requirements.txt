@@ -11,3 +11,4 @@ boto3==1.43.36
 asyncpg==0.31.0
 reportlab==4.2.0
 langsmith==0.9.3
+trafilatura==2.0.0

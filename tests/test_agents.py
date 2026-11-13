@@ -1,10 +1,12 @@
+import asyncio
 import json
+import re
 import pytest
 from langgraph.graph import END
 from app import agents
 from app.agents import (
-    OrchestratorAgent, build_graph, cited_ids, clean_queries, initial_state, parse_json_object, sources_section,
-    response_text, strip_citations,
+    OrchestratorAgent, build_graph, cited_ids, clean_kinds, clean_queries, initial_state, parse_json_object,
+    parse_plan, plan_calls, sources_section, response_text, strip_citations,
 )
 from app.tools.search import SearchUnavailable
 from tests.conftest import make_source
@@ -44,6 +46,47 @@ def test_strip_citations_removes_markers_and_sources_list():
     assert strip_citations(old) == "## Summary\nChips grew 20% and."
 
 
+def test_parse_plan_validates_sub_questions():
+    reply = json.dumps({"sub_questions": [
+        {"question": "What methods exist?", "queries": ["llm guardrail methods", "llm guardrail methods "],
+         "kinds": ["paper", "PAPER", "tv"]},
+        {"question": "Who ships them?", "queries": [], "kinds": "news"},
+        {"queries": ["item without a question"]},
+        "not a dict",
+        {"question": "Fourth", "queries": ["x"]},
+    ]})
+    plan = parse_plan(reply, "topic", max_subquestions=3, max_queries=2)
+    assert [sq["id"] for sq in plan] == [1, 2, 3]
+    assert plan[0] == {"id": 1, "question": "What methods exist?", "queries": ["llm guardrail methods"], "kinds": ["paper"]}
+    assert plan[1]["queries"] == ["Who ships them?"] and plan[1]["kinds"] == ["news"]
+    assert plan[2]["question"] == "item without a question" and plan[2]["kinds"] == ["web"]
+
+
+def test_parse_plan_falls_back_to_legacy_shape_and_topic():
+    legacy = parse_plan('{"queries": ["a", "b"]}', "topic", 3, 2)
+    assert legacy == [{"id": 1, "question": "topic", "queries": ["a", "b"], "kinds": ["web"]}]
+    assert parse_plan("I cannot help", "AI chips", 3, 2)[0]["queries"] == ["AI chips"]
+
+
+def test_clean_kinds_defaults_to_web_and_caps_at_two():
+    assert clean_kinds(["news", "paper", "community"]) == ["news", "paper"]
+    assert clean_kinds(None) == ["web"] and clean_kinds("community") == ["community"]
+
+
+def test_plan_calls_shares_paid_budget_round_robin():
+    subqs = [
+        {"id": 1, "question": "a", "queries": ["a1", "a2"], "kinds": ["web"]},
+        {"id": 2, "question": "b", "queries": ["b1", "b2"], "kinds": ["news"]},
+        {"id": 3, "question": "c", "queries": ["c1", "c2"], "kinds": ["paper", "web"]},
+    ]
+    calls = plan_calls(subqs, web_limit=4)
+    assert calls[1] == [("a1", "web", True), ("a2", "web", True)]
+    # b's second query comes after the paid budget is spent, so it only reaches the free news feed
+    assert calls[2] == [("b1", "news", True), ("b2", "news", False)]
+    # papers are free and always searched; c's second web query is dropped once the budget is gone
+    assert calls[3] == [("c1", "paper", False), ("c1", "web", True), ("c2", "paper", False)]
+
+
 def _state(**overrides):
     state = initial_state("topic", "s", [], "")
     state.update(overrides)
@@ -73,58 +116,102 @@ async def test_gap_check_skipped_without_live_sources_or_at_round_limit(orchestr
 class FakeLLM:
     """Scripted TensorZero replies, keyed by function and (for research_plan) planner vs gap check."""
 
-    def __init__(self, critic_replies, gap_queries):
+    def __init__(self, critic_replies, gap_reply, plan=None):
         self.critic_replies = list(critic_replies)
-        self.gap_queries = gap_queries
+        self.gap_reply = gap_reply
+        self.plan = plan or {"sub_questions": [
+            {"question": "What techniques exist?", "queries": ["q1"], "kinds": ["paper"]},
+            {"question": "What do practitioners say?", "queries": ["q2"], "kinds": ["web", "community"]},
+        ]}
         self.calls = []
+        self.active = self.max_active = 0
 
     async def __call__(self, config, function_name, message):
         self.calls.append(function_name)
         if function_name == "research_plan":
             if "Queries already searched" in message:
-                return json.dumps({"queries": self.gap_queries})
-            return 'Here you go: {"search_topic": "news", "queries": ["q1", "q2"]}'
-        if function_name in ("research_extract", "research_summarize"):
-            return "- fact [1]\n- fact [2]"
+                return json.dumps(self.gap_reply)
+            return "Plan:\n" + json.dumps(self.plan)
+        if function_name == "research_extract":
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            ids = re.findall(r'<source id="(\d+)"', message)
+            return "\n".join(f"- fact from source [{i}]" for i in ids)
+        if function_name == "research_summarize":
+            return "- fact from memory"
         if function_name == "report_write":
-            return "## Executive Summary\nThings happened [1] and more [2]."
+            return "## Executive Summary\nThings happened [1] and more [3]."
         if function_name == "research_verify":
             return self.critic_replies.pop(0)
         raise AssertionError(function_name)
 
 
-async def test_full_graph_with_gap_round_and_critic_rewrite(config, redis, monkeypatch):
-    llm = FakeLLM(critic_replies=["NO\n- claim X is uncited", "YES"], gap_queries=["q3"])
-    searches = []
+@pytest.fixture
+def fake_search(monkeypatch):
+    calls = []
 
-    async def fake_search_many(redis_, config_, queries, existing, topic):
-        searches.append((list(queries), topic))
-        start = len(existing) + 1
-        return existing + [{**make_source(i), "id": i} for i in range(start, start + 2)]
+    async def search_kind(redis_, config_, query, kind, allow_paid=True):
+        calls.append((query, kind, allow_paid))
+        provider = {"web": "tavily", "news": "tavily", "paper": "arxiv", "community": "hackernews"}[kind]
+        return [{**make_source(0, url=f"https://{kind}.example/{query}/{n}"), "provider": provider, "kind": kind}
+                for n in range(2)]
 
+    async def no_scrape(redis_, config_, sources):
+        return sources
+
+    monkeypatch.setattr(agents, "search_kind", search_kind)
+    monkeypatch.setattr(agents, "enrich_sources", no_scrape)
+    return calls
+
+
+async def test_full_graph_fans_out_per_sub_question_with_gap_round(config, redis, monkeypatch, fake_search):
+    config.search_max_sources = 12
+    llm = FakeLLM(critic_replies=["NO\n- claim X is uncited", "YES"], gap_reply={"queries": ["q3"], "kind": "news"})
     monkeypatch.setattr(agents, "_tz_call", llm)
-    monkeypatch.setattr(agents, "search_many", fake_search_many)
 
-    final = await build_graph(config, redis).ainvoke(initial_state("AI chips", "s1", [], ""))
+    final = await build_graph(config, redis).ainvoke(initial_state("LLM guardrails", "s1", [], ""))
 
-    assert searches == [(["q1", "q2"], "news"), (["q3"], "news")]
-    assert final["search_rounds"] == 2
-    assert final["live_sources"] is True
-    assert len(final["sources"]) == 4
-    assert final["iterations"] == 2          # rewritten once after critic NO
-    assert final["verified"] is True
-    assert "## Sources" in final["report"] and "https://example.com/1" in final["report"]
-    assert llm.calls.count("research_plan") == 2  # planner + one gap check (round limit reached after)
+    assert sorted(fake_search) == [("q1", "paper", False), ("q2", "community", False), ("q2", "web", True), ("q3", "news", True)]
+    assert final["search_rounds"] == 2 and final["live_sources"] is True
+    ids = [s["id"] for s in final["sources"]]
+    assert ids == list(range(1, 9))                                   # numbered once, globally: no clashes
+    assert {s["subq"] for s in final["sources"]} == {1, 2, 3}
+    assert {s["kind"] for s in final["sources"]} == {"paper", "web", "community", "news"}
+    # one extract per sub-question per round: 2 in the first round, 1 for the gap sub-question
+    assert llm.calls.count("research_extract") == 3
+    facts = final["facts"]
+    assert facts.index("### What techniques exist?") < facts.index("### What do practitioners say?")
+    assert "### Additional findings: q3" in facts
+    # each branch saw only its own sources
+    paper_ids = {s["id"] for s in final["sources"] if s["subq"] == 1}
+    paper_section = facts.split("### What do practitioners say?")[0]
+    assert set(map(int, re.findall(r"\[(\d+)\]", paper_section))) == paper_ids
+    assert final["iterations"] == 2 and final["verified"] is True
+    assert "## Sources" in final["report"]
+    assert llm.calls.count("research_plan") == 2      # planner + one gap check (round limit reached after)
+
+
+async def test_graph_limits_parallel_llm_calls(config, redis, monkeypatch, fake_search):
+    config.llm_concurrency = 1
+    config.search_max_rounds = 1
+    llm = FakeLLM(critic_replies=["YES"], gap_reply={"queries": []}, plan={"sub_questions": [
+        {"question": f"Q{i}", "queries": [f"q{i}"], "kinds": ["paper"]} for i in range(3)]})
+    monkeypatch.setattr(agents, "_tz_call", llm)
+    final = await build_graph(config, redis).ainvoke(initial_state("topic", "s1", [], ""))
+    assert llm.calls.count("research_extract") == 3 and llm.max_active == 1
+    assert final["search_rounds"] == 1
 
 
 async def test_graph_falls_back_to_model_knowledge_when_search_unavailable(config, redis, monkeypatch):
-    llm = FakeLLM(critic_replies=["YES"], gap_queries=["never used"])
+    llm = FakeLLM(critic_replies=["YES"], gap_reply={"queries": ["never used"]})
 
-    async def no_search(*args):
+    async def no_search(*args, **kwargs):
         raise SearchUnavailable("No search API key configured")
 
     monkeypatch.setattr(agents, "_tz_call", llm)
-    monkeypatch.setattr(agents, "search_many", no_search)
+    monkeypatch.setattr(agents, "search_kind", no_search)
 
     final = await build_graph(config, redis).ainvoke(initial_state("AI chips", "s1", [], ""))
 
@@ -133,4 +220,4 @@ async def test_graph_falls_back_to_model_knowledge_when_search_unavailable(confi
     assert "## Sources" not in final["report"]
     assert "research_summarize" in llm.calls and "research_extract" not in llm.calls
     assert llm.calls.count("research_plan") == 1   # no gap check without live sources
-    assert final["error"].startswith("search:")
+    assert final["error"] == "search: No search API key configured"

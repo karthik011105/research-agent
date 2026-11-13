@@ -8,6 +8,8 @@ import redis.asyncio as aioredis
 from langsmith import traceable
 from app.config import Config
 from app.retry import with_retry
+from app.tools import providers
+from app.tools.providers import make_source
 
 logger = logging.getLogger(__name__)
 
@@ -18,23 +20,18 @@ _BUDGET_PREFIX = "search_budget:"
 _MIN_CONTENT_CHARS = 80
 
 
+KINDS = ("web", "news", "paper", "community")
+# Kinds whose providers spend the paid web-search budget (Tavily/Brave); the others are free APIs
+BUDGETED_KINDS = {"web", "news"}
+
+
 class SearchUnavailable(Exception):
     """No provider configured, daily budget used up, or every provider failed."""
 
 
-def _source(title: str, url: str, content: str, published_date: str, provider: str) -> dict:
-    return {
-        "title": (title or url).strip(),
-        "url": url.strip(),
-        "content": " ".join((content or "").split()),
-        "published_date": published_date or "",
-        "provider": provider,
-    }
-
-
-def parse_tavily(payload: dict) -> list[dict]:
+def parse_tavily(payload: dict, kind: str = "web") -> list[dict]:
     return [
-        _source(r.get("title", ""), r.get("url", ""), r.get("content", ""), r.get("published_date", ""), "tavily")
+        make_source(r.get("title", ""), r.get("url", ""), r.get("content", ""), r.get("published_date", ""), "tavily", kind)
         for r in payload.get("results", [])
         if r.get("url")
     ]
@@ -47,7 +44,7 @@ def parse_brave(payload: dict) -> list[dict]:
             continue
         # Brave returns a short description plus optional extra snippets — join them for more context
         content = " ".join([r.get("description", "")] + r.get("extra_snippets", []))
-        results.append(_source(r.get("title", ""), r["url"], content, r.get("page_age", ""), "brave"))
+        results.append(make_source(r.get("title", ""), r["url"], content, r.get("page_age", ""), "brave", "web"))
     return results
 
 
@@ -64,7 +61,7 @@ async def _tavily(config: Config, query: str, topic: str) -> list[dict]:
             },
         )
         r.raise_for_status()
-        return parse_tavily(r.json())
+        return parse_tavily(r.json(), "news" if topic == "news" else "web")
 
 
 async def _brave(config: Config, query: str) -> list[dict]:
@@ -118,6 +115,111 @@ async def web_search(redis: aioredis.Redis, config: Config, query: str, topic: s
     raise SearchUnavailable("All search providers failed")
 
 
+_COOLDOWN_PREFIX = "provider_cooldown:"
+_DEFAULT_COOLDOWN = 300
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
+
+
+def _retry_after(exc: httpx.HTTPStatusError) -> int:
+    try:
+        seconds = int(exc.response.headers.get("retry-after", ""))
+    except ValueError:
+        seconds = _DEFAULT_COOLDOWN
+    return min(max(seconds, 30), 3600)
+
+
+async def _free_search(redis: aioredis.Redis, config: Config, provider: str, query: str, fetch) -> list[dict]:
+    """Keyless providers: cached like web search, never counted against the paid daily budget.
+    A 429 is not retried; instead the provider is skipped by every job until its cooldown ends, so a
+    rate-limited API costs one failed call rather than slowing down each search."""
+    key = _cache_key(query, provider)
+    cached = await redis.get(key)
+    if cached:
+        return json.loads(cached)
+    cooldown_key = f"{_COOLDOWN_PREFIX}{provider}"
+    if await redis.exists(cooldown_key):
+        raise SearchUnavailable(f"{provider} is cooling down after a rate limit")
+    try:
+        results = await with_retry(fetch, max_retries=config.llm_max_retries, delay=config.llm_retry_delay,
+                                   retry_if=lambda e: not _is_rate_limited(e))
+    except httpx.HTTPStatusError as e:
+        if _is_rate_limited(e):
+            await redis.setex(cooldown_key, _retry_after(e), "1")
+        raise
+    await redis.setex(key, config.search_cache_ttl, json.dumps(results))
+    return results
+
+
+def _providers_for(redis: aioredis.Redis, config: Config, query: str, kind: str, allow_paid: bool) -> list[tuple[str, object]]:
+    enabled = set(config.enabled_providers)
+    n = config.search_max_results
+    web = allow_paid and bool(enabled & {"tavily", "brave"})
+    calls = []
+    if kind == "web" and web:
+        calls.append(("web", lambda: web_search(redis, config, query, "general")))
+    elif kind == "news":
+        if web:
+            calls.append(("web", lambda: web_search(redis, config, query, "news")))
+        if "gdelt" in enabled:
+            calls.append(("gdelt", lambda: _free_search(redis, config, "gdelt", query,
+                                                        lambda: providers.fetch_gdelt(query, n))))
+    elif kind == "paper":
+        if "arxiv" in enabled:
+            calls.append(("arxiv", lambda: _free_search(redis, config, "arxiv", query,
+                                                        lambda: providers.fetch_arxiv(query, n))))
+        if "semantic_scholar" in enabled:
+            calls.append(("semantic_scholar", lambda: _free_search(
+                redis, config, "semantic_scholar", query,
+                lambda: providers.fetch_semantic_scholar(query, n, config.semantic_scholar_api_key))))
+    elif kind == "community" and "hackernews" in enabled:
+        calls.append(("hackernews", lambda: _free_search(redis, config, "hackernews", query,
+                                                         lambda: providers.fetch_hackernews(query, min(n, 3)))))
+    return calls
+
+
+def interleave(result_lists: list[list[dict]]) -> list[dict]:
+    """Round-robin across lists so every provider / sub-question keeps its best results when sources are capped."""
+    out = []
+    for i in range(max((len(r) for r in result_lists), default=0)):
+        out.extend(r[i] for r in result_lists if i < len(r))
+    return out
+
+
+@traceable(run_type="tool", name="tool:search_kind")
+async def search_kind(redis: aioredis.Redis, config: Config, query: str, kind: str, allow_paid: bool = True) -> list[dict]:
+    """One query against every enabled provider for a kind of source (web, news, paper, community), in parallel.
+    allow_paid=False skips Tavily/Brave (the per-job web budget is spent). Individual providers may fail;
+    raises SearchUnavailable only when none of them returned anything."""
+    calls = _providers_for(redis, config, query, kind, allow_paid)
+    if not calls:
+        raise SearchUnavailable(f"No provider enabled for '{kind}' sources")
+    outcomes = await asyncio.gather(*(call() for _, call in calls), return_exceptions=True)
+    ok = []
+    for (name, _), outcome in zip(calls, outcomes):
+        if isinstance(outcome, Exception):
+            logger.warning(f"{name} failed for '{query}' ({kind}): {outcome}")
+        else:
+            ok.append(outcome)
+    if not ok:
+        raise SearchUnavailable(f"All {kind} providers failed: {outcomes[0]}")
+    return interleave(ok)
+
+
+def dedupe_new(result_lists: list[list[dict]], existing: list[dict]) -> list[dict]:
+    """Interleaved results whose URL is not already a source, first occurrence wins."""
+    seen = {s["url"].rstrip("/") for s in existing}
+    fresh = []
+    for s in interleave(result_lists):
+        url = s["url"].rstrip("/")
+        if url not in seen:
+            seen.add(url)
+            fresh.append(s)
+    return fresh
+
+
 def merge_sources(result_lists: list[list[dict]], existing: list[dict], config: Config) -> list[dict]:
     """Dedupe by URL, drop near-empty pages, truncate content, number sources 1..N (existing ids are kept)."""
     seen = {s["url"].rstrip("/") for s in existing}
@@ -134,27 +236,14 @@ def merge_sources(result_lists: list[list[dict]], existing: list[dict], config: 
     return merged
 
 
-async def search_many(redis: aioredis.Redis, config: Config, queries: list[str], existing: list[dict], topic: str = "general") -> list[dict]:
-    """Runs queries in parallel. Individual query failures are skipped; raises only if nothing came back at all."""
-    if not queries:
-        return existing
-    outcomes = await asyncio.gather(*(web_search(redis, config, q, topic) for q in queries), return_exceptions=True)
-    ok = [o for o in outcomes if not isinstance(o, Exception)]
-    for q, o in zip(queries, outcomes):
-        if isinstance(o, Exception):
-            logger.warning(f"Query '{q}' failed: {o}")
-    if not ok and not existing:
-        first_error = next(o for o in outcomes if isinstance(o, Exception))
-        raise SearchUnavailable(str(first_error))
-    return merge_sources(ok, existing, config)
-
-
 def format_sources(sources: list[dict]) -> str:
     """Numbered, delimited source blocks for prompts. The delimiters mark web text as untrusted data."""
     blocks = []
     for s in sources:
         title = s["title"].replace('"', "'")
         meta = f'id="{s["id"]}" title="{title}" url="{s["url"]}"'
+        if s.get("kind"):
+            meta += f' type="{s["kind"]}"'
         if s.get("published_date"):
             meta += f' published="{s["published_date"]}"'
         blocks.append(f"<source {meta}>\n{s['content']}\n</source>")

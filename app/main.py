@@ -80,7 +80,7 @@ async def _process_job(data: dict, msg_id: str):
 
         if hit:
             report_text, sources = hit["report"], hit.get("sources") or []
-            live_sources, search_rounds = bool(sources), 0
+            live_sources, search_rounds, sub_questions, scraped_count = bool(sources), 0, [], 0
         else:
             log.info("Running multi-agent pipeline")
             # Find a related (not identical) previous report for the writer to reference
@@ -93,6 +93,8 @@ async def _process_job(data: dict, msg_id: str):
             live_sources = final_state["live_sources"]
             sources = final_state["sources"] if live_sources else []
             search_rounds = final_state["search_rounds"]
+            sub_questions = [sq["question"] for sq in final_state["sub_questions"]] if live_sources else []
+            scraped_count = final_state["scraped_count"]
             ok, reason = await validate_output(config, report_text)
             if not ok:
                 await set_result(redis_client, config, job_id, {"status": "blocked", "error": reason})
@@ -111,8 +113,11 @@ async def _process_job(data: dict, msg_id: str):
             "live_sources": live_sources,
             "search_rounds": search_rounds,
             "sources_count": len(sources),
+            "sub_questions": sub_questions,
+            "providers_used": sorted({s.get("provider", "") for s in sources} - {""}),
+            "scraped_count": scraped_count,
             # page text stays server-side; the client only needs what it shows
-            "sources": [{k: s.get(k, "") for k in ("id", "title", "url", "published_date", "provider")} for s in sources],
+            "sources": [{k: s.get(k, "") for k in ("id", "title", "url", "published_date", "provider", "kind")} for s in sources],
         }
 
         # Per-query evaluation runs automatically on every job

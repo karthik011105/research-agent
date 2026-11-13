@@ -4,7 +4,7 @@ import pytest
 import respx
 from app.tools import search
 from app.tools.search import (
-    SearchUnavailable, format_sources, merge_sources, parse_brave, parse_tavily, search_many, web_search,
+    SearchUnavailable, format_sources, merge_sources, parse_brave, parse_tavily, web_search,
 )
 from tests.conftest import make_source
 
@@ -99,27 +99,3 @@ async def test_daily_budget_blocks_extra_searches(config, redis):
         await web_search(redis, config, "second")
     # cached queries don't spend budget
     assert await web_search(redis, config, "first")
-
-
-@respx.mock
-async def test_search_many_skips_failed_queries(config, redis):
-    def handler(request):
-        if json.loads(request.content)["query"] == "bad":
-            return httpx.Response(500)
-        return httpx.Response(200, json=TAVILY_OK)
-
-    respx.post(search._TAVILY_URL).mock(side_effect=handler)
-    sources = await search_many(redis, config, ["good", "bad"], [])
-    assert [s["id"] for s in sources] == [1, 2]
-
-
-@respx.mock
-async def test_search_many_raises_when_everything_fails(config, redis):
-    respx.post(search._TAVILY_URL).mock(return_value=httpx.Response(500))
-    with pytest.raises(SearchUnavailable):
-        await search_many(redis, config, ["a", "b"], [])
-
-
-async def test_search_many_with_no_queries_keeps_existing(config, redis):
-    existing = [{**make_source(1), "id": 1}]
-    assert await search_many(redis, config, [], existing) == existing
