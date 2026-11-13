@@ -32,6 +32,7 @@ _POOL_SOURCE_CHARS = 450
 _REPORT_CHARS = 7000
 _DISAGREE_POINTS = 3           # judges further apart than this on accuracy are flagged
 JUDGES = (("qwen", "research_judge"), ("gpt_oss", "research_judge_alt"))
+MAIN_MODEL = "openai/gpt-oss-120b"     # the writer every system is meant to use
 
 
 # ── storage ──────────────────────────────────────────────────────────────────
@@ -285,6 +286,9 @@ async def execute_run(config: Config, redis: aioredis.Redis, store: BenchStore, 
             raise ValueError(f"unknown system {run['system']!r}")
         latency = round(time.monotonic() - started, 1)
         usage = dict(counters)
+        served = sum(usage["models"].values())
+        # Free-tier rate limits make TensorZero fall back to gpt-oss-20b; report how much of the run the main model did
+        usage["main_model_share"] = round(usage["models"].get(MAIN_MODEL, 0) / served, 3) if served else None
 
         metering.start()                      # don't count the judge as the system's cost
         cited = [s for s in sources if s.get("id") in cited_ids(report)]

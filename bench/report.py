@@ -30,6 +30,7 @@ ROWS = [
     ("output_tokens", "metrics", "Output tokens", "{:,.0f}", False),
     ("paid_searches", "metrics", "Paid web searches", "{:.1f}", False),
     ("latency_s", "metrics", "Time per report (s)", "{:.0f}", False),
+    ("main_model_share", "metrics", "LLM calls served by gpt-oss-120b (rest: fallback)", "{:.0%}", True),
 ]
 
 

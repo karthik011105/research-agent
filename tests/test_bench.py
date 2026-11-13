@@ -175,3 +175,27 @@ async def test_multi_system_uses_the_snapshot_search(config, redis, monkeypatch)
     run = await execute_run(config, redis, store, new_run("v1", "t9", "topic", "multi"))
     assert run["status"] == "done", run.get("error")
     assert seen == ["q1"] and ("t9", "q1", "web") in store.snapshots
+
+
+def test_served_models_reads_tensorzero_raw_responses():
+    body = {"raw_response": [
+        {"provider_type": "groq", "data": json.dumps({"model": "openai/gpt-oss-120b", "error": "rate limited"})},
+        {"provider_type": "groq", "data": json.dumps({"model": "openai/gpt-oss-20b", "choices": []})},
+        {"provider_type": "groq", "data": "not json"},
+    ]}
+    assert agents.served_models(body) == ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+    assert agents.served_models({}) == []
+
+
+async def test_main_model_share_reflects_fallbacks(config, redis, monkeypatch):
+    async def fake_llm(config_, function_name, message):
+        if not function_name.startswith("research_judge"):
+            metering.record(llm_calls=1)
+            metering.record_model("openai/gpt-oss-20b")      # writer fell back
+        if function_name.startswith("research_judge"):
+            return '{"accuracy": 5, "completeness": 5, "unsupported_claims": 0}'
+        return "## Executive Summary\nx"
+
+    monkeypatch.setattr(bench, "_tz_call", fake_llm)
+    run = await execute_run(config, redis, MemoryStore(), new_run("v1", "t1", "topic", "single"))
+    assert run["metrics"]["main_model_share"] == 0.0 and run["metrics"]["models"] == {"openai/gpt-oss-20b": 1}

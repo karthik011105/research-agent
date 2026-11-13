@@ -6,7 +6,9 @@ bind_address = "0.0.0.0:3000"
 # Model ids change over time — list the ones your key can use: GET https://api.groq.com/openai/v1/models
 # To use OpenAI again: add a provider with type = "openai", model_name = "gpt-4o-mini" and put it first in routing.
 [models.research_model]
-routing = ["groq_gpt_oss_120b", "groq_gpt_oss_20b", "groq_qwen"]
+# Qwen is NOT a fallback here: Groq's free tier caps it at 1,000 output tokens per minute and rejects any request
+# whose max_tokens is larger, which is every research function (plan 1200 ... report_write 3500).
+routing = ["groq_gpt_oss_120b", "groq_gpt_oss_20b"]
 
 [models.research_model.providers.groq_gpt_oss_120b]
 type = "groq"
@@ -15,10 +17,6 @@ model_name = "openai/gpt-oss-120b"
 [models.research_model.providers.groq_gpt_oss_20b]
 type = "groq"
 model_name = "openai/gpt-oss-20b"
-
-[models.research_model.providers.groq_qwen]
-type = "groq"
-model_name = "qwen/qwen3.8-27b"
 
 # Two judges from different model families, averaged (app/bench.py, eval.py uses judge A). Reports are written by
 # gpt-oss-120b; judge A is Qwen only (no fallback, so it never silently becomes a gpt-oss judge - rate limits are

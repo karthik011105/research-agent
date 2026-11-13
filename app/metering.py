@@ -11,9 +11,21 @@ _counters: ContextVar[dict | None] = ContextVar("bench_meter", default=None)
 
 def start() -> dict:
     """Begin metering in the current context; returns the live counters dict."""
-    counters = {"llm_calls": 0, "input_tokens": 0, "output_tokens": 0, "paid_searches": 0, "free_searches": 0}
+    counters = {"llm_calls": 0, "input_tokens": 0, "output_tokens": 0, "paid_searches": 0, "free_searches": 0,
+                "models": {}}
     _counters.set(counters)
     return counters
+
+
+def active() -> bool:
+    return _counters.get() is not None
+
+
+def record_model(name: str) -> None:
+    """Counts which model actually served a call (TensorZero may fall back to another one on rate limits)."""
+    counters = _counters.get()
+    if counters is not None and name:
+        counters["models"][name] = counters["models"].get(name, 0) + 1
 
 
 def record(**amounts: int) -> None:

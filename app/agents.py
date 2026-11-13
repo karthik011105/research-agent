@@ -162,19 +162,33 @@ def response_text(body: dict) -> str:
     return text
 
 
+def served_models(body: dict) -> list[str]:
+    """Model names from TensorZero's raw provider responses (requested with include_raw_response)."""
+    names = []
+    for entry in body.get("raw_response") or []:
+        try:
+            names.append(json.loads(entry.get("data") or "{}").get("model") or "")
+        except (ValueError, AttributeError):
+            continue
+    return [n for n in names if n]
+
+
 async def _tz_call_once(config: Config, function_name: str, message: str) -> str:
+    payload = {
+        "function_name": function_name,
+        "input": {"messages": [{"role": "user", "content": message}]},
+    }
+    if metering.active():
+        # Benchmark runs only: learn which model actually answered, since fallbacks change the model silently
+        payload["include_raw_response"] = True
     async with httpx.AsyncClient(timeout=180) as client:
-        response = await client.post(
-            f"{config.tensorzero_url}/inference",
-            json={
-                "function_name": function_name,
-                "input": {"messages": [{"role": "user", "content": message}]},
-            },
-        )
+        response = await client.post(f"{config.tensorzero_url}/inference", json=payload)
         response.raise_for_status()
         body = response.json()
         usage = body.get("usage") or {}
         metering.record(llm_calls=1, input_tokens=usage.get("input_tokens", 0), output_tokens=usage.get("output_tokens", 0))
+        for name in served_models(body)[-1:]:      # the last raw response is the one that succeeded
+            metering.record_model(name)
         return response_text(body)
 
 
