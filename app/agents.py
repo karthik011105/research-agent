@@ -216,6 +216,15 @@ def combine_facts(branch_facts: list[dict]) -> str:
     return "\n\n".join(f"### {b['question']}\n{b['facts'].strip()}" for b in sorted(branch_facts, key=lambda b: b["subq"]))
 
 
+# 【1】 / 【1, 3】 / 【2†L4-L9】 (gpt-oss), ［1］ (full-width), [1†source] -> [1] / [1, 3] / [2]
+_CITATION_VARIANTS = re.compile(r"[【［\[]\s*(\d+(?:\s*[,，、]\s*\d+)*)\s*(?:†[^】］\]]*)?[】］\]]")
+
+
+def normalize_citations(text: str) -> str:
+    """Rewrites the citation styles models produce into the [n] form the rest of the pipeline reads."""
+    return _CITATION_VARIANTS.sub(lambda m: "[" + ", ".join(re.findall(r"\d+", m.group(1))) + "]", text)
+
+
 def cited_ids(report: str) -> set[int]:
     return {int(n) for group in re.findall(r"\[(\d+(?:\s*,\s*\d+)*)\]", report) for n in re.split(r"\s*,\s*", group)}
 
@@ -293,7 +302,7 @@ class ExtractAgent:
             )
         logger.info(f"ExtractAgent: extracting facts from {len(sources)} sources for '{question or topic}'")
         focus = f"Sub-question: {question}\n" if question and question != topic else ""
-        return await _tz_call(
+        return normalize_citations(await _tz_call(
             self.config,
             "research_extract",
             f"Topic: {topic}\n{focus}"
@@ -302,7 +311,7 @@ class ExtractAgent:
             f"as at most 8 bullet points. "
             f"End every bullet with the id of the source it came from, e.g. [2] or [1, 3].\n\n"
             f"{format_sources(sources)}",
-        )
+        ))
 
 
 class GapCheckAgent:
@@ -354,14 +363,15 @@ class WriterAgent:
         if critic_feedback:
             feedback_section = f"\n\nA reviewer rejected the previous draft. Fix these problems:\n{critic_feedback}"
         citation_rule = (
-            "Keep the [n] source citations from the findings on every claim that uses them. "
+            "Keep the [n] source citations from the findings on every claim that uses them, written with plain "
+            "square brackets exactly like [3] or [1, 4]. "
             "Do not add a sources or references list — it is appended automatically."
             if live_sources else
             "Live web search was unavailable, so these findings come from model knowledge. "
             "Say so briefly in the Executive Summary and do not invent citations."
         )
 
-        return await _tz_call(
+        return normalize_citations(await _tz_call(
             self.config,
             "report_write",
             f"Today's date: {date.today().isoformat()}\n"
@@ -370,7 +380,7 @@ class WriterAgent:
             f"{ltm_section}{feedback_section}\n\n"
             f"Include: Executive Summary, Key Findings, Analysis, and Conclusion.\n"
             f"{citation_rule}",
-        )
+        ))
 
 
 async def rewrite_for_safety(config: Config, state: dict, policies: list[str]) -> str:

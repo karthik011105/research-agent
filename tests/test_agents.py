@@ -5,8 +5,8 @@ import pytest
 from langgraph.graph import END
 from app import agents
 from app.agents import (
-    OrchestratorAgent, build_graph, cited_ids, clean_kinds, clean_queries, initial_state, parse_json_object,
-    parse_plan, plan_calls, sources_section, response_text, strip_citations,
+    OrchestratorAgent, build_graph, cited_ids, clean_kinds, clean_queries, initial_state, normalize_citations,
+    parse_json_object, parse_plan, plan_calls, sources_section, response_text, strip_citations,
 )
 from app.tools.search import SearchUnavailable
 from tests.conftest import make_source
@@ -21,6 +21,22 @@ def test_parse_json_object_tolerates_surrounding_text():
 def test_clean_queries_dedupes_and_limits():
     assert clean_queries(["A", "a ", "", 5, "b", "c"], 2) == ["A", "b"]
     assert clean_queries("not a list", 3) == []
+
+
+def test_normalize_citations_handles_model_styles():
+    text = "EU rules【1】 and US bills【2, 6】 ［3］ news【4†L10-L20】 [5†source] keep [7] and [a link](https://x.y)"
+    assert normalize_citations(text) == "EU rules[1] and US bills[2, 6] [3] news[4] [5] keep [7] and [a link](https://x.y)"
+
+
+async def test_writer_output_citations_feed_the_sources_list(config, monkeypatch):
+    async def fake_llm(config_, function_name, message):
+        return "Timetable published【1】; Senate bill【6】."
+
+    monkeypatch.setattr(agents, "_tz_call", fake_llm)
+    report = await agents.WriterAgent(config).run("topic", "- f [1]", True, "", "")
+    sources = [{**make_source(i), "id": i} for i in range(1, 7)]
+    assert cited_ids(report) == {1, 6}
+    assert "[6] Page 6" in sources_section(report, sources)
 
 
 def test_cited_ids_reads_single_and_grouped_citations():
