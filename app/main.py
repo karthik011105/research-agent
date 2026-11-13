@@ -1,4 +1,5 @@
 import asyncio
+import time
 import uuid
 import logging
 import traceback
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 from app.config import Config
 from app.pool import init_pool, close_pool, get_pool
 from app.bench import CRITIC_MODES, SYSTEMS, PostgresBenchStore, execute_critic_eval, execute_run, new_run
+from app.learning import LearningService, PostgresLearningStore, outcome_parts
 from app.auth import require_api_key
 from app.cache import cache_get, cache_set
 from app.guardrails import validate_input, validate_output
@@ -90,6 +92,7 @@ async def _process_job(data: dict, msg_id: str):
     output_format = data.get("output_format", "text")
     fresh = data.get("fresh") == "1"
     log = logging.getLogger(f"job.{job_id[:8]}")
+    job_started = time.monotonic()
     try:
         attempt = await start_attempt(redis_client, job_id)
         if attempt > config.job_max_attempts:
@@ -157,6 +160,15 @@ async def _process_job(data: dict, msg_id: str):
                 return
             await cache_set(redis_client, config, topic, report_text, sources)
             await ltm_store(config, topic, report_text, str(uuid.uuid4()), sources)
+            writer_variant = final_state.get("writer_variant") or ""
+            if writer_variant and learning:
+                # Step 4c: the bandit learns from this report's outcome (👍/👎 can add to it later)
+                try:
+                    parts = outcome_parts(final_state, report_text, sources, time.monotonic() - job_started)
+                    reward = await learning.record_report(job_id, writer_variant, parts)
+                    log.info(f"Writer variant {writer_variant}: reward {reward} from {parts}")
+                except Exception as e:
+                    log.warning(f"Could not record writer reward: {e}")
 
         await session_add(redis_client, config, session_id, "assistant", report_text[:config.session_content_truncate])
         diff = await ltm_diff(config, topic)
@@ -172,6 +184,7 @@ async def _process_job(data: dict, msg_id: str):
             "sub_questions": sub_questions,
             "providers_used": sorted({s.get("provider", "") for s in sources} - {""}),
             "scraped_count": scraped_count,
+            "writer_variant": (final_state.get("writer_variant") or "") if origin == "pipeline" else "",
             # page text stays server-side; the client only needs what it shows
             "sources": [{k: s.get(k, "") for k in ("id", "title", "url", "published_date", "provider", "kind")} for s in sources],
         }
@@ -197,7 +210,7 @@ async def _process_job(data: dict, msg_id: str):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_client, graph, bench_store
+    global redis_client, graph, bench_store, learning
     if not config.guardrails_enabled:
         logger.warning("Bedrock guardrails are DISABLED (GUARDRAILS_ENABLED=false) - local development only")
     redis_client = await aioredis.from_url(config.redis_url, decode_responses=True)
@@ -205,7 +218,11 @@ async def lifespan(app: FastAPI):
     await db_migrate(config)
     bench_store = PostgresBenchStore(get_pool())
     await bench_store.migrate()
-    graph = build_graph(config, redis_client)
+    learning_store = PostgresLearningStore(get_pool())
+    await learning_store.migrate()
+    learning = LearningService(learning_store, config.learning_enabled, config.learning_explore)
+    await learning.load()
+    graph = build_graph(config, redis_client, learning=learning)
     app.state.config = config
     worker = asyncio.create_task(_worker_loop())
     yield
@@ -374,6 +391,7 @@ class CriticEvalRequest(BaseModel):
     label: str = Field(min_length=1, max_length=60)
     topic_id: str = Field(min_length=1, max_length=60)
     mode: str
+    learn: bool = False      # Step 4a/4b: train critic trust and the debate policy from the labels
 
 
 @app.post("/bench/critic-eval", dependencies=[Depends(require_api_key)])
@@ -383,7 +401,8 @@ async def bench_critic_eval(req: CriticEvalRequest):
         raise HTTPException(status_code=400, detail=f"mode must be one of {CRITIC_MODES}")
     run = new_run(req.label, req.topic_id, f"critic eval ({req.mode})", f"critic_{req.mode}")
     await bench_store.save_run(run)
-    task = asyncio.create_task(execute_critic_eval(config, bench_store, run, req.mode))
+    task = asyncio.create_task(execute_critic_eval(config, bench_store, run, req.mode,
+                                                   learning if req.learn else None))
     _bench_tasks.add(task)
     task.add_done_callback(_bench_tasks.discard)
     return {"id": run["id"], "status": "running"}
@@ -392,3 +411,28 @@ async def bench_critic_eval(req: CriticEvalRequest):
 @app.get("/bench/runs", dependencies=[Depends(require_api_key)])
 async def bench_runs(label: str, full: bool = False):
     return {"label": label, "runs": await bench_store.list_runs(label, full)}
+
+
+# ── Step 4: learning from scores ─────────────────────────────────────────────
+
+learning: LearningService | None = None
+
+
+class FeedbackRequest(BaseModel):
+    rating: int = Field(ge=-1, le=1)
+
+
+@app.post("/feedback/{job_id}", dependencies=[Depends(require_api_key)])
+async def feedback(job_id: str, req: FeedbackRequest):
+    """👍 (+1) / 👎 (-1) on a report: one more reward for the writer variant that wrote it."""
+    if req.rating == 0:
+        raise HTTPException(status_code=400, detail="rating must be 1 or -1")
+    out = await learning.apply_feedback(job_id, req.rating)
+    if out is None:
+        return {"recorded": False, "detail": "No learning record for this job (cached report, or learning off)."}
+    return {"recorded": True, **out}
+
+
+@app.get("/stats/learning", dependencies=[Depends(require_api_key)])
+async def learning_stats():
+    return await learning.stats()

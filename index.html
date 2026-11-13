@@ -117,6 +117,12 @@
       <button class="btn btn-secondary" onclick="copyJSON()">Copy JSON</button>
       <button class="btn btn-secondary" onclick="loadDiff()">Show Changes vs Previous</button>
     </div>
+    <div class="actions" id="feedback-actions" style="display:none;align-items:center">
+      <span style="color:#8b949e;font-size:0.85rem">Was this report useful?</span>
+      <button class="btn btn-secondary" onclick="sendFeedback(1)" title="Good report">👍</button>
+      <button class="btn btn-secondary" onclick="sendFeedback(-1)" title="Poor report">👎</button>
+      <span id="feedback-status" style="color:#8b949e;font-size:0.8rem"></span>
+    </div>
     <div id="diff-box" style="display:none;margin-top:14px"></div>
   </div>
 
@@ -178,6 +184,20 @@
 
     function getApiKey() {
       return localStorage.getItem('research_agent_api_key') || '';
+    }
+
+    async function sendFeedback(rating) {
+      const status = document.getElementById('feedback-status');
+      try {
+        const resp = await fetch(`${API}/feedback/${currentJobId}`, {
+          method: 'POST', headers: authHeaders(), body: JSON.stringify({ rating })
+        });
+        const out = await resp.json();
+        status.textContent = out.recorded ? 'Thanks - recorded.' : (out.detail || 'Not recorded.');
+        if (out.recorded) document.querySelectorAll('#feedback-actions button').forEach(b => b.disabled = true);
+      } catch (e) {
+        status.textContent = 'Could not send feedback.';
+      }
     }
 
     function authHeaders() {
@@ -277,6 +297,10 @@
           document.getElementById('report-box').style.display = 'block';
           renderSources(data);
           document.getElementById('export-actions').style.display = 'flex';
+          // feedback teaches the writer bandit (Step 4c); only reports the pipeline just wrote can be rated
+          document.getElementById('feedback-status').textContent = '';
+          document.querySelectorAll('#feedback-actions button').forEach(b => b.disabled = false);
+          document.getElementById('feedback-actions').style.display = data.origin === 'pipeline' ? 'flex' : 'none';
           loadSession();
         } else if (data.status === 'blocked') {
           document.getElementById('job-status').className = 'status status-blocked';

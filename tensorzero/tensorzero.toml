@@ -45,6 +45,14 @@ model_name = "qwen/qwen3.8-27b"
 type = "groq"
 model_name = "openai/gpt-oss-20b"
 
+# Step 4c writer variant B: gpt-oss-20b only (no silent switch to 120b), so the bandit compares what it thinks it does
+[models.writer_20b_model]
+routing = ["groq_gpt_oss_20b"]
+
+[models.writer_20b_model.providers.groq_gpt_oss_20b]
+type = "groq"
+model_name = "openai/gpt-oss-20b"
+
 [models.judge_model]
 routing = ["groq_qwen"]
 
@@ -97,6 +105,23 @@ weight = 0.0
 temperature = 0.5
 max_tokens = 3500
 system_template = "templates/report_write_system.minijinja"
+
+# Step 4c writer variants (weight 0: used only when the writer bandit pins them; LEARNING_ENABLED=true)
+[functions.report_write.variants.writer_20b]
+type = "chat_completion"
+model = "writer_20b_model"
+weight = 0.0
+temperature = 0.5
+max_tokens = 3500
+system_template = "templates/report_write_system.minijinja"
+
+[functions.report_write.variants.cite_numbers]
+type = "chat_completion"
+model = "research_model"
+weight = 0.0
+temperature = 0.5
+max_tokens = 3500
+system_template = "templates/report_write_cite_numbers_system.minijinja"
 
 [functions.research_plan]
 type = "chat"

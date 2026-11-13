@@ -79,6 +79,7 @@ class ResearchState(TypedDict):
     verified: bool
     critic_feedback: str
     claim_verdicts: list[dict]   # critic panel: per-claim verdicts of the latest check (empty in "single" mode)
+    writer_variant: str          # Step 4c: TensorZero writer variant the bandit chose for this job ("" = default)
     error: str
     iterations: int
 
@@ -116,6 +117,7 @@ def initial_state(topic: str, session_id: str, session_history: list[dict], ltm_
         verified=False,
         critic_feedback="",
         claim_verdicts=[],
+        writer_variant="",
         error="",
         iterations=0,
     )
@@ -134,12 +136,13 @@ def rate_limit_wait(error_body: str) -> float | None:
     return min(waits) + 1.0 if waits else 20.0
 
 
-async def _tz_call(config: Config, function_name: str, message: str) -> str:
-    """with_retry handles transient errors; a rate-limited call instead waits as long as the provider asks."""
+async def _tz_call(config: Config, function_name: str, message: str, variant: str | None = None) -> str:
+    """with_retry handles transient errors; a rate-limited call instead waits as long as the provider asks.
+    `variant` pins a TensorZero variant (the Step 4c writer bandit's choice)."""
     for attempt in range(config.llm_rate_limit_retries + 1):
         try:
             return await with_retry(
-                lambda: _tz_call_once(config, function_name, message),
+                lambda: _tz_call_once(config, function_name, message, variant),
                 max_retries=config.llm_max_retries,
                 delay=config.llm_retry_delay,
                 retry_if=lambda e: not _is_rate_limited(e),
@@ -177,11 +180,13 @@ def served_models(body: dict) -> list[str]:
     return [n for n in names if n]
 
 
-async def _tz_call_once(config: Config, function_name: str, message: str) -> str:
+async def _tz_call_once(config: Config, function_name: str, message: str, variant: str | None = None) -> str:
     payload = {
         "function_name": function_name,
         "input": {"messages": [{"role": "user", "content": message}]},
     }
+    if variant:
+        payload["variant_name"] = variant
     if metering.active():
         # Benchmark runs only: learn which model actually answered, and pin the no-fallback writer variant so every
         # benchmarked report comes from the same model (see research_model_strict in tensorzero.toml)
@@ -413,7 +418,8 @@ class WriterAgent:
         self.config = config
 
     @traceable(run_type="llm", name="agent:writer")
-    async def run(self, topic: str, facts: str, live_sources: bool, ltm_context: str, critic_feedback: str) -> str:
+    async def run(self, topic: str, facts: str, live_sources: bool, ltm_context: str, critic_feedback: str,
+                  variant: str | None = None) -> str:
         logger.info("WriterAgent: drafting report")
 
         ltm_section = ""
@@ -451,6 +457,7 @@ class WriterAgent:
             f"line that no reliable information was found for it. Attribute each claim to what the source actually "
             f"says - do not merge details from different sources or documents into one claim.\n"
             f"{citation_rule}",
+            **({"variant": variant} if variant else {}),   # only when the writer bandit chose one
         ))
 
 
@@ -513,11 +520,13 @@ class OrchestratorAgent:
     goes back to the writer with the critic's feedback (up to agent_max_iterations drafts) - no extra searches.
     """
 
-    def __init__(self, config: Config, redis: aioredis.Redis, search_fn=None):
+    def __init__(self, config: Config, redis: aioredis.Redis, search_fn=None, learning=None):
         self.config = config
         self.redis = redis
         # The benchmark injects a snapshot-replaying search; normal jobs use live search_kind
         self.search_fn = search_fn
+        # Step 4 LearningService (None in tests and benchmark runs: everything stays rule-based)
+        self.learning = learning
         self.planner = PlannerAgent(config)
         self.extract_agent = ExtractAgent(config)
         self.gap_agent = GapCheckAgent(config)
@@ -634,25 +643,33 @@ class OrchestratorAgent:
 
     @traceable(run_type="chain", name="orchestrator:write")
     async def write_node(self, state: ResearchState) -> dict:
+        # One variant per job (rewrites keep it), never in benchmark runs: those pin the strict writer
+        variant = state.get("writer_variant") or (
+            self.learning.choose_writer() if self.learning and not metering.active() else None) or ""
         report = await self.writer_agent.run(
             state["topic"],
             state["facts"],
             state["live_sources"],
             state.get("ltm_context", ""),
             state.get("critic_feedback", ""),
+            variant=variant or None,
         )
         if state["live_sources"]:
             report += sources_section(report, state["sources"])
-        return {"report": report, "iterations": state.get("iterations", 0) + 1}
+        return {"report": report, "iterations": state.get("iterations", 0) + 1, "writer_variant": variant}
 
     @traceable(run_type="chain", name="orchestrator:verify")
     async def verify_node(self, state: ResearchState) -> dict:
         mode = self.config.critic_mode
         if mode in ("panel", "debate") and state["live_sources"]:
             from app.critics import run_panel
-            result = await run_panel(self.config, state["report"], state["sources"], debate=(mode == "debate"))
+            trust, policy = self.learning.critic_learners() if self.learning else (None, None)
+            result = await run_panel(self.config, state["report"], state["sources"], debate=(mode == "debate"),
+                                     trust=trust, policy=policy)
             logger.info(f"Critic panel ({mode}): {sum(c['decision'] != 'keep' for c in result.claims)} of "
                         f"{len(result.claims)} claims need work, {sum(c['debated'] for c in result.claims)} debated")
+            if self.learning:
+                await self.learning.apply_trust_events(result.trust_events)
             return {"verified": result.passed, "critic_feedback": result.feedback, "claim_verdicts": result.claims}
         verified, feedback = await self.critic_agent.run(state["report"], state["sources"])
         return {"verified": verified, "critic_feedback": feedback, "claim_verdicts": []}
@@ -665,8 +682,8 @@ class OrchestratorAgent:
         return END
 
 
-def build_graph(config: Config, redis: aioredis.Redis, search_fn=None):
-    orchestrator = OrchestratorAgent(config, redis, search_fn)
+def build_graph(config: Config, redis: aioredis.Redis, search_fn=None, learning=None):
+    orchestrator = OrchestratorAgent(config, redis, search_fn, learning)
     workflow = StateGraph(ResearchState)
 
     workflow.add_node("plan", orchestrator.plan_node)

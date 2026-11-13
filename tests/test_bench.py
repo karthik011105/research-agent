@@ -208,7 +208,7 @@ def test_evidence_sources_dedupes_numbers_and_skips_thin_pages():
 
 
 async def test_critic_eval_run_records_scores(config, monkeypatch):
-    async def fake_eval(config_, sources, mode, n=16, seed=7):
+    async def fake_eval(config_, sources, mode, n=16, seed=7, **kwargs):
         return {"caught": 0.75, "false_alarms": 0.1, "llm_calls": 4, "claims_detail": [{"text": "x", "flagged": True}]}
 
     monkeypatch.setattr("app.critic_eval.evaluate_critic", fake_eval)

@@ -86,3 +86,49 @@ async def test_evaluate_single_critic_uses_its_problem_list(config, monkeypatch)
     monkeypatch.setattr(agents, "_tz_call", single)
     result = await evaluate_critic(config, SOURCES, "single", n=6, seed=1)
     assert result["caught"] == round(1 / len(wrong), 3) and result["false_alarms"] == 0.0
+
+
+def test_learn_from_labels_updates_trust_and_debate_policy():
+    from app.critic_eval import learn_from_labels
+    from app.learning import CriticTrust, DebatePolicy
+    claims = [{"text": "Tesla delivered 2.7 million vehicles in 2024", "label": "false"},
+              {"text": "China accounted for 11 million of those sales", "label": "true"}]
+    panel = [
+        {"text": "Tesla delivered 2.7 million vehicles in 2024. [2]", "kind": "date",
+         "fact_checker": {"verdict": "supported"}, "skeptic": {"verdict": "exaggerated"},
+         "trajectory": {0: "exaggerated", 1: "exaggerated", 2: "exaggerated"}},
+        {"text": "China accounted for 11 million of those sales. [1]", "kind": "number",
+         "fact_checker": {"verdict": "supported"}, "skeptic": {"verdict": "supported"}, "trajectory": None},
+    ]
+    trust, policy = CriticTrust(), DebatePolicy()
+    out = learn_from_labels(panel, claims, trust, policy)
+    assert out == {"trust_updates": 2, "policy_updates": 1}
+    assert trust.weights["date"]["skeptic"] > trust.weights["date"]["fact_checker"]   # skeptic was right
+    assert trust.weights["number"] == {"fact_checker": 0.5, "skeptic": 0.5}           # both right: unchanged
+    assert policy.arms["date"]["0"]["n"] == 1 and policy.best("date") == 0             # right without debating
+
+
+async def test_evaluate_with_learning_debates_fully_and_learns(config, monkeypatch):
+    from app.learning import CriticTrust, DebatePolicy
+    claims = build_labelled_claims(SOURCES, n=6, seed=1)
+    truth = {c["text"].rstrip(".")[:30]: c["label"] for c in claims}
+
+    async def stubborn(config_, function, prompt):
+        # fact-checker always says supported (quoting the claim's own source text); the skeptic is always right
+        out = []
+        for cid, text in re.findall(r"CLAIM (\d+) \(type: \w+\): (.+)", prompt):
+            label = next(v for k, v in truth.items() if text.startswith(k))
+            passages = re.findall(r"<source>\[\d+\] (.+?)</source>", prompt)
+            quote = passages[0][:60] if passages else ""
+            if function == "critic_fact" or label == "true":
+                out.append({"id": int(cid), "verdict": "supported", "quote": quote})
+            else:
+                out.append({"id": int(cid), "verdict": "unsupported", "quote": "", "fix": "match the source"})
+        return json.dumps({"verdicts": out})
+
+    monkeypatch.setattr(agents, "_tz_call", stubborn)
+    trust, policy = CriticTrust(), DebatePolicy()
+    result = await evaluate_critic(config, SOURCES, "debate", n=6, seed=1, trust=trust, policy=policy, learn=True)
+    assert result["learned"]["trust_updates"] >= 4 and result["learned"]["policy_updates"] >= 1
+    learned_kinds = [k for k in trust.weights if trust.updates[k]]
+    assert any(trust.weights[k]["skeptic"] > trust.weights[k]["fact_checker"] for k in learned_kinds)

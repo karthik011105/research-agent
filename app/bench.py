@@ -322,15 +322,20 @@ def evidence_sources(evidence: list[dict], limit: int = 8) -> list[dict]:
     return out
 
 
-async def execute_critic_eval(config: Config, store: BenchStore, run: dict, mode: str) -> dict:
-    """Scores one critic setup on claims built from a topic's saved sources (same claims for every setup)."""
+async def execute_critic_eval(config: Config, store: BenchStore, run: dict, mode: str, learning=None) -> dict:
+    """Scores one critic setup on claims built from a topic's saved sources (same claims for every setup).
+    With a LearningService (debate mode), the labels also train critic trust and the debate policy (Step 4a/4b)."""
     from app.critic_eval import evaluate_critic
     try:
         sources = evidence_sources(await store.evidence(run["topic_id"]))
         if not sources:
             raise ValueError("no saved sources for this topic yet - run the benchmark on it first")
         started = time.monotonic()
-        result = await evaluate_critic(config, sources, mode)
+        learn = learning is not None and mode == "debate"
+        result = await evaluate_critic(config, sources, mode, trust=learning.trust if learn else None,
+                                       policy=learning.policy if learn else None, learn=learn)
+        if learn:
+            await learning.save()
         details = result.pop("claims_detail")
         run.update(status="done", report=json.dumps(details), metrics={**result, "latency_s": round(time.monotonic() - started, 1)})
     except Exception as e:

@@ -120,6 +120,10 @@ class Config:
         # disagreements). Stays "single" until the Step 3 comparison shows which setup is best.
         self.critic_mode: str = data.get("CRITIC_MODE", "single").strip().lower()
         self.critic_debate_rounds: int = int(data.get("CRITIC_DEBATE_ROUNDS", 2))
+        # Step 4: use learned behaviour (writer bandit, critic trust, learned debate rounds). Off = rule-based
+        # baseline; labelled critic evaluations still train the learners either way.
+        self.learning_enabled: bool = data.get("LEARNING_ENABLED", "false").strip().lower() == "true"
+        self.learning_explore: float = float(data.get("LEARNING_EXPLORE", 0.1))
 
         # Eval tuning
         self.eval_report_truncate: int = int(data.get("EVAL_REPORT_TRUNCATE", 1500))

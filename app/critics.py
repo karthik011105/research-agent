@@ -13,6 +13,7 @@ CRITIC_MODE chooses "single" (the one YES/NO critic), "panel" (two critics, no d
 """
 import json
 import logging
+import random
 import re
 from dataclasses import dataclass, field
 from app.config import Config
@@ -160,16 +161,25 @@ def stricter(a: dict, b: dict) -> dict:
     return a if a["verdict"] != "supported" else b
 
 
-def decide(claim: Claim, votes: list[dict | None], sources: list[dict]) -> dict:
-    """Final verdict for one claim from the critics' votes (code, no LLM)."""
-    valid = [v for v in votes if valid_vote(v, claim, sources)]
+def decide(claim: Claim, votes: list[dict | None], sources: list[dict], trust=None) -> dict:
+    """Final verdict for one claim from the critics' votes, in CRITICS order (code, no LLM).
+    A disagreement goes to the stricter verdict, or - once Step 4a has learned something - to the critic that is
+    more trusted for this kind of claim."""
+    named = [(role, v) for (role, _), v in zip(CRITICS, votes) if valid_vote(v, claim, sources)]
+    valid = [v for _, v in named]
     if not valid:
         return {"verdict": "unverified", "decision": "fix", "fix": "No critic could verify this against its source: "
                 "check it or remove it.", "agreed": False}
     if len(valid) == 1 or all((v["verdict"] == "supported") == (valid[0]["verdict"] == "supported") for v in valid):
         chosen, agreed = valid[0], len(valid) > 1
     else:
-        chosen, agreed = stricter(valid[0], valid[1]), False
+        agreed = False
+        score = trust.weighted_problem_score(claim.kind, {r: v["verdict"] != "supported" for r, v in named}) \
+            if trust is not None else 0.5
+        if score == 0.5:
+            chosen = stricter(valid[0], valid[1])
+        else:
+            chosen = next(v for v in valid if (v["verdict"] != "supported") == (score > 0.5))
     if chosen["verdict"] == "supported":
         return {"verdict": "supported", "decision": "keep", "fix": "", "agreed": agreed}
     decision = "fix" if chosen.get("fix") else "remove"
@@ -266,6 +276,8 @@ class PanelResult:
     feedback: str
     claims: list[dict]          # per claim: text, kind, final verdict/decision, each critic's vote, debated?
     llm_calls: int
+    # Step 4a online signal: (claim kind, {critic: False}) for every vote discarded for a fabricated quote
+    trust_events: list = field(default_factory=list)
 
 
 async def _ask(call, config: Config, function: str, prompt: str) -> dict[int, dict]:
@@ -276,8 +288,14 @@ async def _ask(call, config: Config, function: str, prompt: str) -> dict[int, di
         return {}
 
 
-async def run_panel(config: Config, report: str, sources: list[dict], debate: bool, call=None) -> PanelResult:
-    """Two critics vote on every cited claim; disagreements are debated if `debate`; code decides."""
+async def run_panel(config: Config, report: str, sources: list[dict], debate: bool, call=None,
+                    trust=None, policy=None, rng=None, full_debate: bool = False) -> PanelResult:
+    """Two critics vote on every cited claim; disagreements are debated if `debate`; code decides.
+
+    trust   (Step 4a) settles disagreements by learned per-claim-type trust instead of "stricter wins"
+    policy  (Step 4b) chooses 0-2 debate rounds per disputed claim instead of the fixed CRITIC_DEBATE_ROUNDS
+    full_debate  debate every disputed claim for the full round budget and record the verdict after each round,
+                 so a labelled evaluation can teach the policy what every choice would have decided"""
     if call is None:
         from app.agents import _tz_call as call
     claims, uncited = split_claims(report)
@@ -292,13 +310,23 @@ async def run_panel(config: Config, report: str, sources: list[dict], debate: bo
             calls += 1
 
     fc, sk = votes["fact_checker"], votes["skeptic"]
-    debated = set()
+    trust_events = []
+    for c in claims:                      # a vote that cites text not in the source is a mistake, whatever the truth
+        bad = {role: False for role, v in (("fact_checker", fc.get(c.id)), ("skeptic", sk.get(c.id)))
+               if v is not None and not valid_vote(v, c, sources)}
+        if bad:
+            trust_events.append((c.kind, bad))
+
+    debated, trajectory = set(), {}
     if debate:
-        for _ in range(config.critic_debate_rounds):
-            disputed = disagreements(claims, fc, sk, sources)
-            if not disputed:
-                break
-            for c in disputed:
+        disputed = disagreements(claims, fc, sk, sources)
+        budget = {c.id: (config.critic_debate_rounds if (full_debate or policy is None)
+                         else policy.choose(c.kind, rng or random.Random())) for c in disputed}
+        for c in disputed:
+            trajectory[c.id] = {0: decide(c, [fc.get(c.id), sk.get(c.id)], sources, trust)["verdict"]}
+        for round_no in range(1, max(budget.values(), default=0) + 1):
+            active = [c for c in disputed if budget[c.id] >= round_no and c.id not in _settled(c, fc, sk, sources)]
+            for c in active:
                 debated.add(c.id)
                 new_fc = await _ask(call, config, "critic_fact", debate_prompt("fact_checker", c, fc[c.id], sk[c.id], "skeptic"))
                 new_sk = await _ask(call, config, "critic_skeptic", debate_prompt("skeptic", c, sk[c.id], fc[c.id], "fact_checker"))
@@ -307,9 +335,22 @@ async def run_panel(config: Config, report: str, sources: list[dict], debate: bo
                     fc[c.id] = new_fc[c.id]
                 if c.id in new_sk:
                     sk[c.id] = new_sk[c.id]
+            for c in disputed:            # a settled claim keeps its verdict for the remaining rounds
+                trajectory[c.id][round_no] = decide(c, [fc.get(c.id), sk.get(c.id)], sources, trust)["verdict"]
 
-    finals = {c.id: decide(c, [fc.get(c.id), sk.get(c.id)], sources) for c in claims}
+    finals = {c.id: decide(c, [fc.get(c.id), sk.get(c.id)], sources, trust) for c in claims}
     details = [{"id": c.id, "text": c.text, "kind": c.kind, "sources": c.source_ids, **finals[c.id],
-                "debated": c.id in debated, "fact_checker": fc.get(c.id), "skeptic": sk.get(c.id)} for c in claims]
+                "debated": c.id in debated, "trajectory": trajectory.get(c.id),
+                "fact_checker": fc.get(c.id), "skeptic": sk.get(c.id)} for c in claims]
     feedback = feedback_for_writer(claims, finals, uncited)
-    return PanelResult(passed=not feedback, feedback=feedback, claims=details, llm_calls=calls)
+    return PanelResult(passed=not feedback, feedback=feedback, claims=details, llm_calls=calls,
+                       trust_events=trust_events)
+
+
+def _settled(claim: Claim, fc: dict, sk: dict, sources: list[dict]) -> set:
+    """{claim.id} if the critics now agree on this claim, else an empty set."""
+    a, b = fc.get(claim.id), sk.get(claim.id)
+    if valid_vote(a, claim, sources) and valid_vote(b, claim, sources) and \
+            (a["verdict"] == "supported") == (b["verdict"] == "supported"):
+        return {claim.id}
+    return set()

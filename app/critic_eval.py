@@ -144,8 +144,40 @@ def mentioned(feedback: str, claims: list[dict]) -> list[bool]:
     return out
 
 
-async def evaluate_critic(config: Config, sources: list[dict], mode: str, n: int = 16, seed: int = 7) -> dict:
-    """Runs one critic setup over the same labelled claims and scores it."""
+def _label_for(panel_claim: dict, claims: list[dict]) -> dict | None:
+    return next((c for c in claims if c["text"][:40] in panel_claim["text"] or panel_claim["text"][:40] in c["text"]),
+                None)
+
+
+def learn_from_labels(panel_claims: list[dict], claims: list[dict], trust, policy) -> dict:
+    """Step 4a/4b learning from labelled claims: each critic's vote is right or wrong against the known label, and a
+    debated claim's verdict after 0/1/2 rounds tells the debate policy what each choice would have decided."""
+    from app.critics import CRITICS
+    trust_updates = policy_updates = 0
+    for pc in panel_claims:
+        label = _label_for(pc, claims)
+        if label is None:
+            continue
+        truth_problem = label["label"] == "false"
+        correct = {}
+        for role, _ in CRITICS:
+            vote = pc.get(role)
+            if vote is not None:
+                correct[role] = (vote["verdict"] != "supported") == truth_problem
+        if correct and trust is not None:
+            trust.update(pc["kind"], correct)
+            trust_updates += 1
+        if pc.get("trajectory") and policy is not None:
+            policy.learn(pc["kind"], {int(r): (v not in ("supported",)) == truth_problem
+                                      for r, v in pc["trajectory"].items()})
+            policy_updates += 1
+    return {"trust_updates": trust_updates, "policy_updates": policy_updates}
+
+
+async def evaluate_critic(config: Config, sources: list[dict], mode: str, n: int = 16, seed: int = 7,
+                          trust=None, policy=None, learn: bool = False) -> dict:
+    """Runs one critic setup over the same labelled claims and scores it. With learn=True (debate mode) it debates
+    every disagreement for the full budget and updates `trust` and `policy` from the labels."""
     from app import metering
     from app.agents import CriticAgent
     from app.critics import run_panel
@@ -154,17 +186,20 @@ async def evaluate_critic(config: Config, sources: list[dict], mode: str, n: int
     if not claims:
         raise ValueError("no usable sentences in the sources to build claims from")
     report = claims_report(claims)
+    learned = {}
     counters = metering.start()
     if mode == "single":
         passed, feedback = await CriticAgent(config).run(report, sources)
         flagged = [False] * len(claims) if passed else mentioned(feedback, claims)
     elif mode in ("panel", "debate"):
-        result = await run_panel(config, report, sources, debate=(mode == "debate"))
+        result = await run_panel(config, report, sources, debate=(mode == "debate"), trust=trust,
+                                 full_debate=learn and mode == "debate")
         verdicts = {c["text"][:60]: c["decision"] != "keep" for c in result.claims}
         flagged = [next((v for k, v in verdicts.items() if k[:40] in c["text"] or c["text"][:40] in k), False)
                    for c in claims]
+        learned = learn_from_labels(result.claims, claims, trust, policy) if learn else {}
     else:
         raise ValueError(f"unknown critic mode {mode!r}")
-    return {**score(claims, flagged), "mode": mode, "llm_calls": counters["llm_calls"],
+    return {**score(claims, flagged), "mode": mode, "learned": learned, "llm_calls": counters["llm_calls"],
             "tokens": counters["input_tokens"] + counters["output_tokens"],
             "claims_detail": [{**c, "flagged": f} for c, f in zip(claims, flagged)]}

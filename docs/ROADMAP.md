@@ -166,6 +166,17 @@ All three parts are **learning-based**. No model weights change; the system lear
 
 **Done when:** the chart shows traffic shifting to the best variant, and the benchmark confirms that variant really scores higher.
 
+**Status (2026-11-13): built, not yet measured live.**
+- `app/learning.py`: CriticTrust (4a), DebatePolicy (4b), WriterBandit (4c), LearningService, with state in Postgres.
+- The critic panel uses learned trust and debate rounds. Writer variants B (`writer_20b`) and C (`cite_numbers`) are weight-0 TensorZero variants pinned by the bandit.
+- Rewards are computed after each job, plus 👍/👎 (`POST /feedback/{job_id}`). The learners are visible at `GET /stats/learning`.
+- `LEARNING_ENABLED` defaults to false: production stays rule-based until learning is measured. `POST /bench/critic-eval` with `learn=true` trains the critics from labelled claims either way.
+- Simulations in the tests show convergence:
+  - the bandit sends over 70% of late traffic to the best writer
+  - the debate policy learns 1 round for numbers and 0 for general claims
+  - trust shifts towards the critic that is right
+- Live measurement runs together with Steps 2 and 3, once Groq quota allows.
+
 **Stretch goal, after Step 7:**
 - Train a small open critic model with real RL (DPO/GRPO) on the labelled verdicts.
 - This needs a GPU (e.g. Colab) and its own model host, because Groq can't serve custom weights.
