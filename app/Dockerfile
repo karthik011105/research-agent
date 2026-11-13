@@ -5,6 +5,9 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+# CPU-only PyTorch (for sentence-transformers embeddings). The default PyPI build bundles ~3 GB of NVIDIA CUDA
+# libraries that Fargate and laptops never use: slower builds and deploys, more ECR storage.
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.14.1
 RUN pip install --no-cache-dir -r requirements.txt
 
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"

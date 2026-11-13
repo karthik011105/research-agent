@@ -24,7 +24,8 @@
 **Total: about 15–20 sessions.** Each step builds on the one before. Step 2 measures everything that follows, and the rule-based Step 3 is the baseline that the learning in Step 4 must beat.
 
 ## Working rules for every step
-- Build and test locally while the AWS stack is **paused** (`pause.bat`). Resume only to deploy or demo, at about $0.27/hour.
+- Runs happen on **AWS** (owner's choice). Code is written and unit-tested on the laptop with plain Python (no Docker). The stack is resumed only to deploy, verify, run the benchmark or demo, and paused straight after, at about $0.27/hour while running.
+- `docker-compose.yml` stays in the repo as an optional local alternative, but is not part of the workflow.
 - Every change ships with tests and CI must be green before deploying. After a deploy, verify live once the old task has stopped. The drain now takes 30 s.
 - Changes that loosen safety, and every `terraform apply`, need the owner's explicit OK.
 - Free-tier budgets:
@@ -35,11 +36,12 @@
 ---
 
 ## Step 0: Housekeeping (½ session)
-- [ ] Pause the AWS stack whenever it isn't being used.
-- [ ] Pin `tensorzero/gateway` to an exact version, not `:latest`, so a new release can't change behaviour on the next deploy.
-- [ ] Set up a local dev stack: app + TensorZero + Redis + Postgres/pgvector via docker compose, using the same code as production.
+- [x] Pause the AWS stack whenever it isn't being used.
+- [x] Pin `tensorzero/gateway` to an exact version (2026.6.0 + digest), not `:latest`, so a new release can't change behaviour on the next deploy.
+- [x] Optional local stack (`docker-compose.yml`, `CONFIG_SOURCE=env`, `scripts/local_env.py`). It isn't used, because runs happen on AWS.
+- [x] CPU-only PyTorch in the app image: drops about 3 GB of unused CUDA libraries, so builds, deploys and ECR storage are smaller.
 
-**Done when:** a research job runs end-to-end on the laptop with AWS paused.
+**Done when:** the next deploy builds with the pinned gateway and the slimmer image, and a live job succeeds.
 
 ## Step 1: Foundation fixes (1 session)
 - [ ] Semantic cache: stop scanning every key per lookup (vector index or bounded candidate set).
