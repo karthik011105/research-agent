@@ -590,6 +590,10 @@ resource "aws_lb_target_group" "app" {
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
   target_type = "ip"
+  # Default is 300 s. The old task's queue worker keeps taking research jobs until ECS stops it after
+  # draining, so during a deploy new requests were answered by the previous code for ~5 minutes.
+  # API requests are short (jobs run in the background), so 30 s is enough to finish in-flight calls.
+  deregistration_delay = 30
   health_check {
     path                = "/health"
     healthy_threshold   = 2
