@@ -78,6 +78,16 @@
 
 **Done when:** one command reproduces the A/B/C table.
 
+**Status (2026-11-13):**
+- Built and deployed.
+- Owner's choice: free Groq tier with the 8-topic `small` set, about 2 days, because gpt-oss-120b has a 200k tokens/day limit.
+- What the trial runs taught us:
+  - The judge needs each report's own cited sources.
+  - Two judges are used (Qwen + gpt-oss), with disagreements flagged.
+  - Benchmark runs pin a no-fallback writer, so the quota running out pauses the run instead of mixing models.
+  - Qwen can't serve as a writer fallback (1k output tokens/min).
+- `v1` stopped on the daily quota. Continue the next day with `bash scripts/resume_safe.sh`, then `python bench/run.py --url <alb> --label v1 --set small`.
+
 ## Step 3: Critic panel with debate (2–3 sessions). Rule-based, and the baseline for Step 4
 - [ ] **3a Claim splitter**:
   - Break the report into single claims, each tied to its `[n]` source.
