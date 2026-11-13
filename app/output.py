@@ -1,4 +1,3 @@
-import asyncio
 import difflib
 import hashlib
 from datetime import datetime
@@ -7,7 +6,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from app.config import Config
 from app.pool import get_pool
-from app.memory import _model
+from app.embeddings import embed
 
 
 def generate_pdf(title: str, content: str) -> bytes:
@@ -43,7 +42,7 @@ def generate_json_report(topic: str, report: str, report_id: str, created_at: da
 
 
 async def get_report_diff(config: Config, topic: str) -> str | None:
-    embedding = await asyncio.to_thread(lambda: _model.encode(topic).tolist())
+    embedding = await embed(topic)
     pool = get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
