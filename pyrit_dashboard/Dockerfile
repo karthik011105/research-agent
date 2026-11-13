@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /
 COPY pyrit_dashboard/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY pyrit_dashboard/main.py .
+COPY pyrit_dashboard/main.py pyrit_dashboard/scoring.py ./
 
 # In production: use gunicorn with multiple workers
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
