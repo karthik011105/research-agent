@@ -7,7 +7,7 @@ from datetime import date, datetime
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import Response, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import redis.asyncio as aioredis
 
 logging.basicConfig(
@@ -17,7 +17,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from app.config import Config
-from app.pool import init_pool, close_pool
+from app.pool import init_pool, close_pool, get_pool
+from app.bench import SYSTEMS, PostgresBenchStore, execute_run, new_run
 from app.auth import require_api_key
 from app.cache import cache_get, cache_set
 from app.guardrails import validate_input, validate_output
@@ -196,12 +197,14 @@ async def _process_job(data: dict, msg_id: str):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_client, graph
+    global redis_client, graph, bench_store
     if not config.guardrails_enabled:
         logger.warning("Bedrock guardrails are DISABLED (GUARDRAILS_ENABLED=false) - local development only")
     redis_client = await aioredis.from_url(config.redis_url, decode_responses=True)
     await init_pool(config)
     await db_migrate(config)
+    bench_store = PostgresBenchStore(get_pool())
+    await bench_store.migrate()
     graph = build_graph(config, redis_client)
     app.state.config = config
     worker = asyncio.create_task(_worker_loop())
@@ -338,3 +341,35 @@ async def trigger_batch_evaluation(req: BatchEvalRequest):
         raise HTTPException(status_code=400, detail="No topics found. Submit at least one research job first.")
     asyncio.create_task(run_batch_evaluation(config, graph, topics))
     return {"message": "Batch evaluation started in background", "topics": len(topics)}
+
+
+# ── Benchmark (Step 2): driven by bench/run.py, results read by bench/report.py ──
+
+bench_store: PostgresBenchStore | None = None
+_bench_tasks: set[asyncio.Task] = set()
+
+
+class BenchRunRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=60)
+    topic_id: str = Field(min_length=1, max_length=60)
+    topic: str = Field(min_length=3, max_length=500)
+    system: str
+    trap: bool = False
+
+
+@app.post("/bench/run", dependencies=[Depends(require_api_key)])
+async def bench_run(req: BenchRunRequest):
+    """Starts one (topic, system) benchmark run in the background - runs take minutes, longer than the ALB timeout."""
+    if req.system not in SYSTEMS:
+        raise HTTPException(status_code=400, detail=f"system must be one of {SYSTEMS}")
+    run = new_run(req.label, req.topic_id, req.topic, req.system)
+    await bench_store.save_run(run)
+    task = asyncio.create_task(execute_run(config, redis_client, bench_store, run, req.trap))
+    _bench_tasks.add(task)                 # keep a reference: unreferenced tasks can be garbage-collected
+    task.add_done_callback(_bench_tasks.discard)
+    return {"id": run["id"], "status": "running"}
+
+
+@app.get("/bench/runs", dependencies=[Depends(require_api_key)])
+async def bench_runs(label: str, full: bool = False):
+    return {"label": label, "runs": await bench_store.list_runs(label, full)}

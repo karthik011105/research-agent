@@ -44,8 +44,8 @@ def _app_imports():
 
 @pytest.mark.parametrize("importer, module, name", list(_app_imports()))
 def test_app_import_targets_exist(importer, module, name):
-    target = _module_path(module)
-    assert target is not None, f"{importer}: module {module} not found"
     if (APP.parent / pathlib.Path(*module.split(".")) / name).with_suffix(".py").exists():
-        return   # `from app.tools import search` - a submodule
+        return   # `from app import metering` / `from app.tools import search` - a submodule
+    target = _module_path(module)
+    assert target is not None, f"{importer}: module {module} not found (or {name!r} is not a submodule of it)"
     assert name in _top_level_names(target), f"{importer} imports {name!r} from {module}, which doesn't define it"

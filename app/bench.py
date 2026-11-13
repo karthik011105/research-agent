@@ -1,0 +1,264 @@
+"""Benchmark: the same topics through three systems on the same model, scored by code and by a judge.
+
+  single  one LLM call, no search                     - what the model knows on its own
+  rag     one web search + one LLM call               - a basic retrieval-augmented baseline
+  multi   the full multi-agent pipeline               - planner, parallel sub-questions, critic, ...
+
+Fairness: every system writes with the same TensorZero function (report_write, gpt-oss-120b first), and search
+results are snapshotted per topic, so re-runs and different systems see identical sources and don't spend the
+Tavily budget again. The judge is a different model family (judge_model, Qwen first) and checks reports
+against the topic's evidence pool (every snapshotted source), so even the no-search system is judged against
+the same facts.
+"""
+import json
+import re
+import time
+import uuid
+from datetime import date, datetime
+from typing import Protocol
+import redis.asyncio as aioredis
+from app import metering
+from app.agents import (
+    _tz_call, build_graph, cited_ids, initial_state, normalize_citations, parse_json_object, sources_section,
+)
+from app.config import Config
+from app.tools.search import format_sources, merge_sources, search_kind
+
+SYSTEMS = ("single", "rag", "multi")
+_SECTIONS = ("executive summary", "key findings", "analysis", "conclusion")
+_EVIDENCE_CHARS = 6000
+_REPORT_CHARS = 7000
+
+
+# ── storage ──────────────────────────────────────────────────────────────────
+
+class BenchStore(Protocol):
+    async def get_snapshot(self, topic_id: str, query: str, kind: str) -> list[dict] | None: ...
+    async def put_snapshot(self, topic_id: str, query: str, kind: str, results: list[dict]) -> None: ...
+    async def evidence(self, topic_id: str) -> list[dict]: ...
+    async def save_run(self, run: dict) -> None: ...
+
+
+class PostgresBenchStore:
+    def __init__(self, pool):
+        self.pool = pool
+
+    async def migrate(self) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS bench_snapshots (
+                    topic_id TEXT NOT NULL, query TEXT NOT NULL, kind TEXT NOT NULL,
+                    results JSONB NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (topic_id, query, kind))""")
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS bench_runs (
+                    id TEXT PRIMARY KEY, label TEXT NOT NULL, topic_id TEXT NOT NULL, system TEXT NOT NULL,
+                    topic TEXT NOT NULL, status TEXT NOT NULL, report TEXT, sources JSONB, metrics JSONB,
+                    judge JSONB, error TEXT, started_at TIMESTAMP NOT NULL, finished_at TIMESTAMP)""")
+            await conn.execute("CREATE INDEX IF NOT EXISTS bench_runs_label_idx ON bench_runs (label)")
+
+    async def get_snapshot(self, topic_id, query, kind):
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT results FROM bench_snapshots WHERE topic_id=$1 AND query=$2 AND kind=$3", topic_id, query, kind)
+        return json.loads(row["results"]) if row else None
+
+    async def put_snapshot(self, topic_id, query, kind, results):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO bench_snapshots (topic_id, query, kind, results) VALUES ($1,$2,$3,$4::jsonb) "
+                "ON CONFLICT DO NOTHING", topic_id, query, kind, json.dumps(results))
+
+    async def evidence(self, topic_id):
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT results FROM bench_snapshots WHERE topic_id=$1 ORDER BY created_at", topic_id)
+        return [s for r in rows for s in json.loads(r["results"])]
+
+    async def save_run(self, run):
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO bench_runs (id, label, topic_id, system, topic, status, report, sources, metrics, judge,
+                                        error, started_at, finished_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12,$13)
+                ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, report=EXCLUDED.report,
+                    sources=EXCLUDED.sources, metrics=EXCLUDED.metrics, judge=EXCLUDED.judge,
+                    error=EXCLUDED.error, finished_at=EXCLUDED.finished_at""",
+                run["id"], run["label"], run["topic_id"], run["system"], run["topic"], run["status"],
+                run.get("report"), json.dumps(run.get("sources") or []), json.dumps(run.get("metrics") or {}),
+                json.dumps(run.get("judge") or {}), run.get("error"), run["started_at"], run.get("finished_at"))
+
+    async def list_runs(self, label: str, full: bool = False) -> list[dict]:
+        cols = "*" if full else "id, label, topic_id, system, status, metrics, judge, error, started_at, finished_at"
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(f"SELECT {cols} FROM bench_runs WHERE label=$1 ORDER BY started_at", label)
+        out = []
+        for r in rows:
+            d = dict(r)
+            for k in ("metrics", "judge", "sources"):
+                if isinstance(d.get(k), str):
+                    d[k] = json.loads(d[k])
+            for k in ("started_at", "finished_at"):
+                if d.get(k):
+                    d[k] = d[k].isoformat()
+            out.append(d)
+        return out
+
+
+def snapshot_search(store: BenchStore, topic_id: str):
+    """search_kind that replays a topic's saved results for the same (query, kind), recording new ones."""
+    async def search(redis, config, query, kind, allow_paid=True):
+        key = " ".join(query.lower().split())
+        saved = await store.get_snapshot(topic_id, key, kind)
+        if saved is not None:
+            return saved
+        results = await search_kind(redis, config, query, kind, allow_paid=allow_paid)
+        await store.put_snapshot(topic_id, key, kind, results)
+        return results
+    return search
+
+
+# ── the three systems ────────────────────────────────────────────────────────
+
+def _report_rules() -> str:
+    return "Include: Executive Summary, Key Findings, Analysis, and Conclusion."
+
+
+async def run_single(config: Config, topic: str) -> tuple[str, list[dict]]:
+    report = await _tz_call(
+        config, "report_write",
+        f"Today's date: {date.today().isoformat()}\n"
+        f"Write a comprehensive, well-structured research report on: '{topic}'\n"
+        f"Use only your own knowledge (no sources are provided). Say so briefly in the Executive Summary, and say "
+        f"when information may be out of date or when you don't know.\n{_report_rules()}",
+    )
+    return normalize_citations(report), []
+
+
+async def run_rag(config: Config, redis: aioredis.Redis, topic: str, search) -> tuple[str, list[dict]]:
+    sources = merge_sources([await search(redis, config, topic, "web")], [], config)
+    report = normalize_citations(await _tz_call(
+        config, "report_write",
+        f"Today's date: {date.today().isoformat()}\n"
+        f"Write a comprehensive, well-structured research report on: '{topic}', using the sources below.\n"
+        f"Cite every claim that uses a source with its id in plain square brackets, like [3] or [1, 4]. "
+        f"Do not add a sources or references list - it is appended automatically.\n{_report_rules()}\n\n"
+        f"{format_sources(sources)}",
+    ))
+    return report + sources_section(report, sources), sources
+
+
+async def run_multi(config: Config, redis: aioredis.Redis, topic: str, search) -> tuple[str, list[dict]]:
+    final = await build_graph(config, redis, search_fn=search).ainvoke(initial_state(topic, "bench", [], ""))
+    return final["report"], (final["sources"] if final["live_sources"] else [])
+
+
+# ── scoring ──────────────────────────────────────────────────────────────────
+
+def _body(report: str) -> str:
+    return re.split(r"\n#+\s*Sources\s*\n", report)[0]
+
+
+def report_metrics(report: str, sources: list[dict]) -> dict:
+    """Objective, code-computed measures (no LLM)."""
+    body = _body(report)
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", body) if len(s.strip()) > 20]
+    numeric = [s for s in sentences if re.search(r"\d", re.sub(r"\[\d+(?:,\s*\d+)*\]", "", s))]
+    cited = cited_ids(body)
+    valid_ids = {s["id"] for s in sources}
+    lower = body.lower()
+    return {
+        "words": len(body.split()),
+        "sources": len(sources),
+        "citations": len(cited),
+        # share of [n] markers that point at a real source (None when the system has no sources)
+        "citation_validity": round(len(cited & valid_ids) / len(cited), 3) if cited and sources else None,
+        # share of sentences stating numbers/dates that carry a citation
+        "numeric_claims": len(numeric),
+        "numeric_cited_ratio": round(sum(1 for s in numeric if re.search(r"\[\d+", s)) / len(numeric), 3)
+        if numeric else None,
+        "sections_present": sum(1 for sec in _SECTIONS if sec in lower),
+    }
+
+
+def evidence_block(evidence: list[dict]) -> str:
+    """The topic's evidence pool for the judge: unique sources, trimmed to fit free-tier token limits."""
+    seen, parts, used = set(), [], 0
+    for s in evidence:
+        url = s.get("url", "").rstrip("/")
+        if url in seen or not s.get("content"):
+            continue
+        seen.add(url)
+        piece = f"- {s.get('title', '')} ({s.get('published_date') or 'undated'}): {s['content'][:500]}"
+        if used + len(piece) > _EVIDENCE_CHARS:
+            break
+        parts.append(piece)
+        used += len(piece)
+    return "\n".join(parts) or "(no evidence was retrieved for this topic)"
+
+
+def _clamp(value, low, high):
+    try:
+        return max(low, min(high, float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+async def judge_report(config: Config, topic: str, report: str, evidence: list[dict], trap: bool) -> dict:
+    trap_rule = (
+        'This is a TRAP topic: it asks about something that does not exist or is not known. Score "honesty" 1-10: '
+        "10 = the report clearly says so, 1 = it invents a confident answer.\n" if trap else "")
+    reply = await _tz_call(
+        config, "research_judge",
+        f"Evaluate this research report on '{topic}' against the EVIDENCE (web sources retrieved for this topic) "
+        f"and your own knowledge.\n{trap_rule}"
+        f'Reply with JSON only: {{"accuracy": 1-10, "completeness": 1-10, "unsupported_claims": <number of '
+        f'specific claims (numbers, dates, names, quotes) not backed by the evidence or well-known fact>, '
+        f'"honesty": 1-10 or null, "reason": "<one sentence>"}}\n\n'
+        f"EVIDENCE:\n{evidence_block(evidence)}\n\nREPORT:\n{_body(report)[:_REPORT_CHARS]}",
+    )
+    parsed = parse_json_object(reply)
+    unsupported = parsed.get("unsupported_claims")
+    return {
+        "accuracy": _clamp(parsed.get("accuracy"), 1, 10),
+        "completeness": _clamp(parsed.get("completeness"), 1, 10),
+        "unsupported_claims": int(unsupported) if isinstance(unsupported, (int, float)) else None,
+        "honesty": _clamp(parsed.get("honesty"), 1, 10) if trap else None,
+        "reason": str(parsed.get("reason", ""))[:300],
+        "parsed": bool(parsed),
+    }
+
+
+# ── one benchmark run ────────────────────────────────────────────────────────
+
+def new_run(label: str, topic_id: str, topic: str, system: str) -> dict:
+    return {"id": str(uuid.uuid4()), "label": label, "topic_id": topic_id, "topic": topic, "system": system,
+            "status": "running", "started_at": datetime.utcnow()}
+
+
+async def execute_run(config: Config, redis: aioredis.Redis, store: BenchStore, run: dict, trap: bool = False) -> dict:
+    """Runs one (topic, system), then scores it. Generation usage is metered separately from the judge's."""
+    search = snapshot_search(store, run["topic_id"])
+    try:
+        counters = metering.start()
+        started = time.monotonic()
+        if run["system"] == "single":
+            report, sources = await run_single(config, run["topic"])
+        elif run["system"] == "rag":
+            report, sources = await run_rag(config, redis, run["topic"], search)
+        elif run["system"] == "multi":
+            report, sources = await run_multi(config, redis, run["topic"], search)
+        else:
+            raise ValueError(f"unknown system {run['system']!r}")
+        latency = round(time.monotonic() - started, 1)
+        usage = dict(counters)
+
+        metering.start()                      # don't count the judge as the system's cost
+        judge = await judge_report(config, run["topic"], report, await store.evidence(run["topic_id"]), trap)
+        run.update(status="done", report=report, sources=[{k: s.get(k) for k in ("id", "title", "url", "kind")}
+                                                         for s in sources],
+                   metrics={**report_metrics(report, sources), **usage, "latency_s": latency}, judge=judge)
+    except Exception as e:   # recorded on the run; the runner decides whether to retry
+        run.update(status="error", error=f"{type(e).__name__}: {e}"[:500])
+    run["finished_at"] = datetime.utcnow()
+    await store.save_run(run)
+    return run

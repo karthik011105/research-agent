@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 import httpx
 import redis.asyncio as aioredis
 from langsmith import traceable
+from app import metering
 from app.config import Config
 from app.retry import with_retry
 from app.tools import providers
@@ -107,6 +108,7 @@ async def web_search(redis: aioredis.Redis, config: Config, query: str, topic: s
     if not await _take_budget(redis, config):
         raise SearchUnavailable(f"Daily search limit of {config.search_daily_limit} reached")
 
+    metering.record(paid_searches=1)
     for name, call in providers:
         try:
             results = await with_retry(call, max_retries=config.llm_max_retries, delay=config.llm_retry_delay)
@@ -149,6 +151,7 @@ async def _free_search(redis: aioredis.Redis, config: Config, provider: str, que
         await providers.throttle(provider)
         if await redis.exists(cooldown_key):
             raise SearchUnavailable(f"{provider} is cooling down after a rate limit")
+        metering.record(free_searches=1)
         return await fetch()
 
     try:

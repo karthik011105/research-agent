@@ -42,3 +42,6 @@ Thumbs.db
 htmlcov/
 .coverage
 coverage.xml
+
+# Terraform plan files can contain secret values - never commit them
+*.tfplan

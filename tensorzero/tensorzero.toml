@@ -20,6 +20,19 @@ model_name = "openai/gpt-oss-20b"
 type = "groq"
 model_name = "qwen/qwen3.8-27b"
 
+# Judges score reports written by gpt-oss-120b, so they prefer a different model family (Qwen) to avoid a
+# model grading its own writing. Falls back to gpt-oss-20b when Qwen is rate-limited.
+[models.judge_model]
+routing = ["groq_qwen", "groq_gpt_oss_20b"]
+
+[models.judge_model.providers.groq_qwen]
+type = "groq"
+model_name = "qwen/qwen3.8-27b"
+
+[models.judge_model.providers.groq_gpt_oss_20b]
+type = "groq"
+model_name = "openai/gpt-oss-20b"
+
 [functions.research_summarize]
 type = "chat"
 
@@ -80,7 +93,7 @@ type = "chat"
 
 [functions.research_judge.variants.primary]
 type = "chat_completion"
-model = "research_model"
+model = "judge_model"
 weight = 1.0
 temperature = 0.0
 max_tokens = 800

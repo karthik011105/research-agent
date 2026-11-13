@@ -10,6 +10,7 @@ import redis.asyncio as aioredis
 from langgraph.graph import StateGraph, END, START
 from langgraph.types import Send
 from langsmith import traceable
+from app import metering
 from app.config import Config
 from app.retry import with_retry
 from app.tools.scrape import enrich_sources
@@ -171,7 +172,10 @@ async def _tz_call_once(config: Config, function_name: str, message: str) -> str
             },
         )
         response.raise_for_status()
-        return response_text(response.json())
+        body = response.json()
+        usage = body.get("usage") or {}
+        metering.record(llm_calls=1, input_tokens=usage.get("input_tokens", 0), output_tokens=usage.get("output_tokens", 0))
+        return response_text(body)
 
 
 def parse_json_object(text: str) -> dict:
@@ -486,9 +490,11 @@ class OrchestratorAgent:
     goes back to the writer with the critic's feedback (up to agent_max_iterations drafts) - no extra searches.
     """
 
-    def __init__(self, config: Config, redis: aioredis.Redis):
+    def __init__(self, config: Config, redis: aioredis.Redis, search_fn=None):
         self.config = config
         self.redis = redis
+        # The benchmark injects a snapshot-replaying search; normal jobs use live search_kind
+        self.search_fn = search_fn
         self.planner = PlannerAgent(config)
         self.extract_agent = ExtractAgent(config)
         self.gap_agent = GapCheckAgent(config)
@@ -521,7 +527,8 @@ class OrchestratorAgent:
     async def search_branch(self, task: SearchTask) -> dict:
         subq = task["subq"]
         outcomes = await asyncio.gather(
-            *(search_kind(self.redis, self.config, q, kind, allow_paid=paid) for q, kind, paid in task["calls"]),
+            *((self.search_fn or search_kind)(self.redis, self.config, q, kind, allow_paid=paid)
+              for q, kind, paid in task["calls"]),
             return_exceptions=True,
         )
         ok = [o for o in outcomes if not isinstance(o, Exception)]
@@ -628,8 +635,8 @@ class OrchestratorAgent:
         return END
 
 
-def build_graph(config: Config, redis: aioredis.Redis):
-    orchestrator = OrchestratorAgent(config, redis)
+def build_graph(config: Config, redis: aioredis.Redis, search_fn=None):
+    orchestrator = OrchestratorAgent(config, redis, search_fn)
     workflow = StateGraph(ResearchState)
 
     workflow.add_node("plan", orchestrator.plan_node)
