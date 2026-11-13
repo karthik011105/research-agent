@@ -199,3 +199,22 @@ async def test_main_model_share_reflects_fallbacks(config, redis, monkeypatch):
     monkeypatch.setattr(bench, "_tz_call", fake_llm)
     run = await execute_run(config, redis, MemoryStore(), new_run("v1", "t1", "topic", "single"))
     assert run["metrics"]["main_model_share"] == 0.0 and run["metrics"]["models"] == {"openai/gpt-oss-20b": 1}
+
+
+def test_evidence_sources_dedupes_numbers_and_skips_thin_pages():
+    ev = [make_source(1), make_source(1, url="https://example.com/1/"), make_source(2, content="short"), make_source(3)]
+    out = bench.evidence_sources(ev)
+    assert [s["id"] for s in out] == [1, 2] and [s["url"] for s in out] == ["https://example.com/1", "https://example.com/3"]
+
+
+async def test_critic_eval_run_records_scores(config, monkeypatch):
+    async def fake_eval(config_, sources, mode, n=16, seed=7):
+        return {"caught": 0.75, "false_alarms": 0.1, "llm_calls": 4, "claims_detail": [{"text": "x", "flagged": True}]}
+
+    monkeypatch.setattr("app.critic_eval.evaluate_critic", fake_eval)
+    store = MemoryStore()
+    store.snapshots[("t1", "q", "web")] = [make_source(1), make_source(2)]
+    run = await bench.execute_critic_eval(config, store, new_run("c1", "t1", "critic eval", "critic_debate"), "debate")
+    assert run["status"] == "done" and run["metrics"]["caught"] == 0.75 and json.loads(run["report"])[0]["flagged"]
+    empty = await bench.execute_critic_eval(config, MemoryStore(), new_run("c1", "t9", "x", "critic_panel"), "panel")
+    assert empty["status"] == "error" and "no saved sources" in empty["error"]

@@ -301,3 +301,40 @@ async def execute_run(config: Config, redis: aioredis.Redis, store: BenchStore, 
     run["finished_at"] = datetime.utcnow()
     await store.save_run(run)
     return run
+
+
+# ── Step 3: critic setups on labelled claims (error injection) ──────────────
+
+CRITIC_MODES = ("single", "panel", "debate")
+
+
+def evidence_sources(evidence: list[dict], limit: int = 8) -> list[dict]:
+    """The topic's snapshotted sources, deduplicated and numbered, as test material for the critics."""
+    seen, out = set(), []
+    for s in evidence:
+        url = (s.get("url") or "").rstrip("/")
+        if url in seen or len(s.get("content", "")) < 200:
+            continue
+        seen.add(url)
+        out.append({**s, "id": len(out) + 1})
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def execute_critic_eval(config: Config, store: BenchStore, run: dict, mode: str) -> dict:
+    """Scores one critic setup on claims built from a topic's saved sources (same claims for every setup)."""
+    from app.critic_eval import evaluate_critic
+    try:
+        sources = evidence_sources(await store.evidence(run["topic_id"]))
+        if not sources:
+            raise ValueError("no saved sources for this topic yet - run the benchmark on it first")
+        started = time.monotonic()
+        result = await evaluate_critic(config, sources, mode)
+        details = result.pop("claims_detail")
+        run.update(status="done", report=json.dumps(details), metrics={**result, "latency_s": round(time.monotonic() - started, 1)})
+    except Exception as e:
+        run.update(status="error", error=f"{type(e).__name__}: {e}"[:500])
+    run["finished_at"] = datetime.utcnow()
+    await store.save_run(run)
+    return run

@@ -21,7 +21,8 @@ from app.tools.search import (
 logger = logging.getLogger(__name__)
 
 _GAP_QUERIES = 2          # web-search queries a gap-check round may spend
-STRICT_FUNCTIONS = {"research_summarize", "report_write", "research_plan", "research_extract", "research_verify"}
+STRICT_FUNCTIONS = {"research_summarize", "report_write", "research_plan", "research_extract", "research_verify",
+                    "critic_fact"}
 
 ABOUT_ME = (
     "I'm the Autonomous Research Agent. Give me a topic and I research it for you: I split it into "
@@ -77,6 +78,7 @@ class ResearchState(TypedDict):
     report: str
     verified: bool
     critic_feedback: str
+    claim_verdicts: list[dict]   # critic panel: per-claim verdicts of the latest check (empty in "single" mode)
     error: str
     iterations: int
 
@@ -113,6 +115,7 @@ def initial_state(topic: str, session_id: str, session_history: list[dict], ltm_
         report="",
         verified=False,
         critic_feedback="",
+        claim_verdicts=[],
         error="",
         iterations=0,
     )
@@ -424,7 +427,9 @@ class WriterAgent:
             )
         feedback_section = ""
         if critic_feedback:
-            feedback_section = f"\n\nA reviewer rejected the previous draft. Fix these problems:\n{critic_feedback}"
+            feedback_section = (f"\n\nReviewers checked the previous draft against its sources. Apply every item "
+                                f"below (FIX = correct it to match the source, REMOVE = delete the claim), and keep "
+                                f"everything else:\n{critic_feedback}")
         citation_rule = (
             "Keep the [n] source citations from the findings on every claim that uses them, written with plain "
             "square brackets exactly like [3] or [1, 4]. "
@@ -642,8 +647,15 @@ class OrchestratorAgent:
 
     @traceable(run_type="chain", name="orchestrator:verify")
     async def verify_node(self, state: ResearchState) -> dict:
+        mode = self.config.critic_mode
+        if mode in ("panel", "debate") and state["live_sources"]:
+            from app.critics import run_panel
+            result = await run_panel(self.config, state["report"], state["sources"], debate=(mode == "debate"))
+            logger.info(f"Critic panel ({mode}): {sum(c['decision'] != 'keep' for c in result.claims)} of "
+                        f"{len(result.claims)} claims need work, {sum(c['debated'] for c in result.claims)} debated")
+            return {"verified": result.passed, "critic_feedback": result.feedback, "claim_verdicts": result.claims}
         verified, feedback = await self.critic_agent.run(state["report"], state["sources"])
-        return {"verified": verified, "critic_feedback": feedback}
+        return {"verified": verified, "critic_feedback": feedback, "claim_verdicts": []}
 
     def route_after_verify(self, state: ResearchState) -> str:
         """Orchestrator decision: rewrite with critic feedback or finish."""

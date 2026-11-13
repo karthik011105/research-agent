@@ -115,6 +115,14 @@
 - The best rule-based setup is the default.
 - A regression test covers the ISO-vs-EU case.
 
+**Status (2026-11-13): built, not yet measured live.**
+- Code:
+  - `app/critics.py`: claim splitter, passage picker, fact-checker + skeptic, quote check, debate, code judge.
+  - `app/critic_eval.py`: error injection and scoring.
+  - `POST /bench/critic-eval` runs one setup on a topic's saved sources.
+- `CRITIC_MODE` stays `single` in production until the comparison is run (`single` / `panel` / `debate`).
+- The live comparison needs the benchmark's saved sources and Groq quota, so it runs together with Step 2.
+
 ## Step 4: Learning from scores ⭐ (3–4 sessions). The system improves itself from feedback
 All three parts are **learning-based**. No model weights change; the system learns *decisions* from outcomes. Statistics are stored in the existing Postgres, so nothing is added to the bill. TensorZero's built-in experiments would need a ClickHouse database, an extra always-on cost, so they aren't used.
 

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 from app.config import Config
 from app.pool import init_pool, close_pool, get_pool
-from app.bench import SYSTEMS, PostgresBenchStore, execute_run, new_run
+from app.bench import CRITIC_MODES, SYSTEMS, PostgresBenchStore, execute_critic_eval, execute_run, new_run
 from app.auth import require_api_key
 from app.cache import cache_get, cache_set
 from app.guardrails import validate_input, validate_output
@@ -366,6 +366,25 @@ async def bench_run(req: BenchRunRequest):
     await bench_store.save_run(run)
     task = asyncio.create_task(execute_run(config, redis_client, bench_store, run, req.trap))
     _bench_tasks.add(task)                 # keep a reference: unreferenced tasks can be garbage-collected
+    task.add_done_callback(_bench_tasks.discard)
+    return {"id": run["id"], "status": "running"}
+
+
+class CriticEvalRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=60)
+    topic_id: str = Field(min_length=1, max_length=60)
+    mode: str
+
+
+@app.post("/bench/critic-eval", dependencies=[Depends(require_api_key)])
+async def bench_critic_eval(req: CriticEvalRequest):
+    """Step 3: scores one critic setup on error-injected claims built from a topic's saved sources."""
+    if req.mode not in CRITIC_MODES:
+        raise HTTPException(status_code=400, detail=f"mode must be one of {CRITIC_MODES}")
+    run = new_run(req.label, req.topic_id, f"critic eval ({req.mode})", f"critic_{req.mode}")
+    await bench_store.save_run(run)
+    task = asyncio.create_task(execute_critic_eval(config, bench_store, run, req.mode))
+    _bench_tasks.add(task)
     task.add_done_callback(_bench_tasks.discard)
     return {"id": run["id"], "status": "running"}
 

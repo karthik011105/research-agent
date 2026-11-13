@@ -116,6 +116,10 @@ class Config:
         self.agent_max_iterations: int = int(data.get("AGENT_MAX_ITERATIONS", 2))
         self.critic_report_truncate: int = int(data.get("CRITIC_REPORT_TRUNCATE", 8000))
         self.critic_source_chars: int = int(data.get("CRITIC_SOURCE_CHARS", 600))
+        # Step 3: "single" (one YES/NO critic), "panel" (fact-checker + skeptic) or "debate" (panel + debate on
+        # disagreements). Stays "single" until the Step 3 comparison shows which setup is best.
+        self.critic_mode: str = data.get("CRITIC_MODE", "single").strip().lower()
+        self.critic_debate_rounds: int = int(data.get("CRITIC_DEBATE_ROUNDS", 2))
 
         # Eval tuning
         self.eval_report_truncate: int = int(data.get("EVAL_REPORT_TRUNCATE", 1500))
