@@ -21,6 +21,7 @@ from app.tools.search import (
 logger = logging.getLogger(__name__)
 
 _GAP_QUERIES = 2          # web-search queries a gap-check round may spend
+STRICT_FUNCTIONS = {"research_summarize", "report_write", "research_plan", "research_extract", "research_verify"}
 
 ABOUT_ME = (
     "I'm the Autonomous Research Agent. Give me a topic and I research it for you: I split it into "
@@ -179,8 +180,11 @@ async def _tz_call_once(config: Config, function_name: str, message: str) -> str
         "input": {"messages": [{"role": "user", "content": message}]},
     }
     if metering.active():
-        # Benchmark runs only: learn which model actually answered, since fallbacks change the model silently
+        # Benchmark runs only: learn which model actually answered, and pin the no-fallback writer variant so every
+        # benchmarked report comes from the same model (see research_model_strict in tensorzero.toml)
         payload["include_raw_response"] = True
+        if function_name in STRICT_FUNCTIONS:
+            payload["variant_name"] = "strict"
     async with httpx.AsyncClient(timeout=180) as client:
         response = await client.post(f"{config.tensorzero_url}/inference", json=payload)
         response.raise_for_status()

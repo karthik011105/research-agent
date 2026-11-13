@@ -1,3 +1,4 @@
+import json
 import httpx
 import pytest
 import respx
@@ -69,3 +70,27 @@ async def test_tz_call_other_errors_use_normal_retries(config, sleeps):
     with pytest.raises(httpx.HTTPStatusError):
         await _tz_call(config, "research_plan", "hi")
     assert route.call_count == 2
+
+
+@respx.mock
+async def test_benchmark_runs_pin_the_strict_writer_and_normal_runs_do_not(config):
+    from app import metering
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "content": [{"type": "text", "text": "ok"}], "usage": {"input_tokens": 5, "output_tokens": 2},
+            "raw_response": [{"provider_type": "groq", "data": json.dumps({"model": "openai/gpt-oss-120b"})}]})
+
+    respx.post("http://tensorzero.test/inference").mock(side_effect=handler)
+    await _tz_call(config, "report_write", "hi")                     # normal job: fallback allowed
+    counters = metering.start()                                       # benchmark run
+    await _tz_call(config, "report_write", "hi")
+    await _tz_call(config, "research_judge", "hi")
+    metering._counters.set(None)
+
+    assert "variant_name" not in bodies[0] and "include_raw_response" not in bodies[0]
+    assert bodies[1]["variant_name"] == "strict" and bodies[1]["include_raw_response"] is True
+    assert "variant_name" not in bodies[2]                            # judges keep their own models
+    assert counters["models"] == {"openai/gpt-oss-120b": 2} and counters["llm_calls"] == 2

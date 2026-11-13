@@ -18,6 +18,16 @@ model_name = "openai/gpt-oss-120b"
 type = "groq"
 model_name = "openai/gpt-oss-20b"
 
+# Benchmark runs pin the "strict" variants below: gpt-oss-120b only, no fallback, so every benchmarked report is
+# written by the same model. When its daily token limit is reached the call fails and the runner waits for the
+# next day instead of silently mixing in gpt-oss-20b. Normal research keeps the fallback (variant "primary").
+[models.research_model_strict]
+routing = ["groq_gpt_oss_120b"]
+
+[models.research_model_strict.providers.groq_gpt_oss_120b]
+type = "groq"
+model_name = "openai/gpt-oss-120b"
+
 # Two judges from different model families, averaged (app/bench.py, eval.py uses judge A). Reports are written by
 # gpt-oss-120b; judge A is Qwen only (no fallback, so it never silently becomes a gpt-oss judge - rate limits are
 # waited out instead). Judge B is gpt-oss: since every benchmarked system writes with the same model, any
@@ -30,15 +40,12 @@ type = "groq"
 model_name = "qwen/qwen3.8-27b"
 
 [models.judge_alt_model]
-routing = ["groq_gpt_oss_20b", "groq_gpt_oss_120b"]
+routing = ["groq_gpt_oss_20b"]   # not 120b: that daily quota is reserved for the writer
 
 [models.judge_alt_model.providers.groq_gpt_oss_20b]
 type = "groq"
 model_name = "openai/gpt-oss-20b"
 
-[models.judge_alt_model.providers.groq_gpt_oss_120b]
-type = "groq"
-model_name = "openai/gpt-oss-120b"
 
 [functions.research_summarize]
 type = "chat"
@@ -47,6 +54,14 @@ type = "chat"
 type = "chat_completion"
 model = "research_model"
 weight = 1.0
+temperature = 0.3
+max_tokens = 2000
+system_template = "templates/research_summarize_system.minijinja"
+
+[functions.research_summarize.variants.strict]
+type = "chat_completion"
+model = "research_model_strict"
+weight = 0.0
 temperature = 0.3
 max_tokens = 2000
 system_template = "templates/research_summarize_system.minijinja"
@@ -62,6 +77,14 @@ temperature = 0.5
 max_tokens = 3500
 system_template = "templates/report_write_system.minijinja"
 
+[functions.report_write.variants.strict]
+type = "chat_completion"
+model = "research_model_strict"
+weight = 0.0
+temperature = 0.5
+max_tokens = 3500
+system_template = "templates/report_write_system.minijinja"
+
 [functions.research_plan]
 type = "chat"
 
@@ -69,6 +92,14 @@ type = "chat"
 type = "chat_completion"
 model = "research_model"
 weight = 1.0
+temperature = 0.2
+max_tokens = 1200
+system_template = "templates/research_plan_system.minijinja"
+
+[functions.research_plan.variants.strict]
+type = "chat_completion"
+model = "research_model_strict"
+weight = 0.0
 temperature = 0.2
 max_tokens = 1200
 system_template = "templates/research_plan_system.minijinja"
@@ -84,6 +115,14 @@ temperature = 0.1
 max_tokens = 2500
 system_template = "templates/research_extract_system.minijinja"
 
+[functions.research_extract.variants.strict]
+type = "chat_completion"
+model = "research_model_strict"
+weight = 0.0
+temperature = 0.1
+max_tokens = 2500
+system_template = "templates/research_extract_system.minijinja"
+
 [functions.research_verify]
 type = "chat"
 
@@ -91,6 +130,14 @@ type = "chat"
 type = "chat_completion"
 model = "research_model"
 weight = 1.0
+temperature = 0.0
+max_tokens = 1500
+system_template = "templates/research_verify_system.minijinja"
+
+[functions.research_verify.variants.strict]
+type = "chat_completion"
+model = "research_model_strict"
+weight = 0.0
 temperature = 0.0
 max_tokens = 1500
 system_template = "templates/research_verify_system.minijinja"

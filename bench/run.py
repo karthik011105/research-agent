@@ -1,6 +1,6 @@
 """Runs the benchmark against the deployed app, one (topic, system) at a time. Safe to stop and re-run.
 
-    python bench/run.py --url http://<alb_dns> [--label v1] [--systems multi,rag,single] [--topics n1,t4] [--max-runs 20]
+    python bench/run.py --url http://<alb_dns> [--label v1] [--set small | --topics n1,t4] [--systems multi,rag,single]
 
 - Skips runs that already finished for this label; retries errors (up to --max-attempts) and runs left
   "running" by a deploy. Stops cleanly when Groq's daily limit is reached: run it again the next day.
@@ -45,6 +45,7 @@ def main() -> int:
     ap.add_argument("--label", default="v1")
     ap.add_argument("--systems", default="multi,rag,single")
     ap.add_argument("--topics", default="", help="comma-separated topic ids (default: all)")
+    ap.add_argument("--set", default="", help="a named topic set from topics.json, e.g. small")
     ap.add_argument("--max-runs", type=int, default=1000, help="stop after starting this many runs")
     ap.add_argument("--max-attempts", type=int, default=3)
     args = ap.parse_args()
@@ -53,7 +54,10 @@ def main() -> int:
     if not base.startswith("http"):
         base = "http://" + base
     client = httpx.Client(headers={"X-API-Key": api_key()}, timeout=30)
-    topics = json.loads(TOPICS.read_text(encoding="utf-8"))["topics"]
+    data = json.loads(TOPICS.read_text(encoding="utf-8"))
+    topics = data["topics"]
+    if args.set:
+        topics = [t for t in topics if t["id"] in set(data["sets"][args.set])]
     if args.topics:
         wanted = set(args.topics.split(","))
         topics = [t for t in topics if t["id"] in wanted]

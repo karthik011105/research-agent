@@ -21,6 +21,8 @@ def test_topics_file_is_valid():
     data = json.loads((ROOT / "bench" / "topics.json").read_text(encoding="utf-8"))
     ids = [t["id"] for t in data["topics"]]
     assert len(ids) == len(set(ids)) == 25
+    for name, members in data.get("sets", {}).items():
+        assert set(members) <= set(ids), name
     assert {t["category"] for t in data["topics"]} == {"news", "technical", "comparison", "trap"}
     assert all(t.get("trap") for t in data["topics"] if t["category"] == "trap")
 

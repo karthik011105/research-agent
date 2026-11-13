@@ -98,6 +98,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required=True)
     ap.add_argument("--label", default="v1")
+    ap.add_argument("--set", default="", help="limit the comparison to a named topic set, e.g. small")
     args = ap.parse_args()
     import importlib.util
     spec = importlib.util.spec_from_file_location("bench_run", HERE / "run.py")
@@ -107,7 +108,10 @@ def main() -> None:
     base = args.url if args.url.startswith("http") else "http://" + args.url
     runs = httpx.get(f"{base.rstrip('/')}/bench/runs", params={"label": args.label},
                      headers={"X-API-Key": run_mod.api_key()}, timeout=60).json()["runs"]
-    topics = json.loads((HERE / "topics.json").read_text(encoding="utf-8"))["topics"]
+    data = json.loads((HERE / "topics.json").read_text(encoding="utf-8"))
+    topics = data["topics"]
+    if args.set:
+        topics = [t for t in topics if t["id"] in set(data["sets"][args.set])]
     agg = aggregate(runs, topics)
     out = HERE / "results"
     out.mkdir(exist_ok=True)
