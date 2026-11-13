@@ -22,7 +22,9 @@ from app.auth import require_api_key
 from app.cache import cache_get, cache_set
 from app.guardrails import validate_input, validate_output
 from app.memory import session_add, session_get, ltm_search, ltm_search_related, ltm_store, ltm_diff, db_migrate
-from app.queue import push_job, get_result, set_result, ensure_group, consume_jobs, ack_job
+from app.queue import (
+    push_job, get_result, set_result, ensure_group, consume_jobs, ack_job, requeue_job, start_attempt,
+)
 from app.agents import build_graph, initial_state, quick_reply, rewrite_for_safety
 from app.output import generate_pdf, generate_json_report, get_report_diff
 from app.eval import evaluate_report, run_batch_evaluation, fetch_recent_topics
@@ -42,15 +44,33 @@ async def _rate_limit(request: Request) -> None:
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
 
 
+# Jobs this worker has taken from the queue and not finished: msg_id -> job data
+_inflight: dict[str, dict] = {}
+
+
 async def _worker_loop():
     await ensure_group(redis_client, config)
     while True:
         try:
             jobs = await consume_jobs(redis_client, config)
             for job in jobs:
+                _inflight[job["msg_id"]] = job["data"]
                 asyncio.create_task(_process_job(job["data"], job["msg_id"]))
+        except asyncio.CancelledError:
+            raise
         except Exception:
             await asyncio.sleep(1)
+
+
+async def _hand_back_unfinished_jobs():
+    """On shutdown (deploy, scale-in, pause), put running jobs back on the queue for the next worker."""
+    for msg_id, data in list(_inflight.items()):
+        try:
+            await requeue_job(redis_client, config, msg_id, data)
+            _inflight.pop(msg_id, None)
+            logger.info(f"Handed job {data.get('job_id', '?')[:8]} back to the queue")
+        except Exception as e:
+            logger.error(f"Could not hand back job {data.get('job_id', '?')[:8]}: {e}")
 
 
 def _direct_result(topic: str, reply: str) -> dict:
@@ -70,7 +90,15 @@ async def _process_job(data: dict, msg_id: str):
     fresh = data.get("fresh") == "1"
     log = logging.getLogger(f"job.{job_id[:8]}")
     try:
-        log.info(f"Starting job for topic: {topic}")
+        attempt = await start_attempt(redis_client, job_id)
+        if attempt > config.job_max_attempts:
+            log.error(f"Giving up after {attempt - 1} interrupted attempts")
+            await set_result(redis_client, config, job_id, {
+                "status": "error",
+                "error": "The research job was interrupted repeatedly (server restarts). Please submit it again.",
+            })
+            return
+        log.info(f"Starting job for topic: {topic}" + (f" (attempt {attempt})" if attempt > 1 else ""))
 
         # Greetings / "who are you?" are not research topics: answer instantly, spend no searches or LLM calls
         direct = quick_reply(topic)
@@ -162,7 +190,8 @@ async def _process_job(data: dict, msg_id: str):
         log.error(f"Job failed: {traceback.format_exc()}")
         await set_result(redis_client, config, job_id, {"status": "error", "error": str(e)})
     finally:
-        await ack_job(redis_client, config, msg_id)
+        if _inflight.pop(msg_id, None) is not None:   # not handed back during shutdown
+            await ack_job(redis_client, config, msg_id)
 
 
 @asynccontextmanager
@@ -173,8 +202,10 @@ async def lifespan(app: FastAPI):
     await db_migrate(config)
     graph = build_graph(config, redis_client)
     app.state.config = config
-    asyncio.create_task(_worker_loop())
+    worker = asyncio.create_task(_worker_loop())
     yield
+    worker.cancel()                        # stop taking new jobs first
+    await _hand_back_unfinished_jobs()
     await redis_client.aclose()
     await close_pool()
 

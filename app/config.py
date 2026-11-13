@@ -62,6 +62,10 @@ class Config:
         # hostname = unique per ECS task = safe for horizontal scaling
         self.consumer_name: str = data.get("CONSUMER_NAME", socket.gethostname())
         self.result_ttl: int = int(data.get("RESULT_TTL", 3600))
+        # A pending job untouched this long belonged to a worker that died; another worker takes it over.
+        # Longer than the slowest real job (rate-limit waits included) so a live worker is never overtaken.
+        self.job_reclaim_idle_ms: int = int(data.get("JOB_RECLAIM_IDLE_MS", 15 * 60 * 1000))
+        self.job_max_attempts: int = int(data.get("JOB_MAX_ATTEMPTS", 3))
 
         # Live web search (Tavily primary, Brave optional fallback)
         self.tavily_api_key: str = data.get("TAVILY_API_KEY", "")
