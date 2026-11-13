@@ -168,4 +168,4 @@ python bench/report.py --url <app> --label v1 --set small       # tables -> benc
 bash scripts/pause_safe.sh
 ```
 
-All experiment code is unit-tested (347 tests), including end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit convergence.
+All experiment code is unit-tested (369 tests), including end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit convergence.

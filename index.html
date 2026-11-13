@@ -24,7 +24,16 @@
     .status-done { background: #1f3d2b; color: #3fb950; }
     .status-error { background: #3d1f1f; color: #f85149; }
     .status-blocked { background: #3d2d1f; color: #d29922; }
-    #report-box { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 16px; font-size: 0.9rem; line-height: 1.6; white-space: pre-wrap; max-height: 400px; overflow-y: auto; }
+    #report-box { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 16px; font-size: 0.9rem; line-height: 1.6; max-height: 560px; overflow-y: auto; overflow-wrap: anywhere; }
+    #report-box h2, #report-box h3, #report-box h4 { color: #e6edf3; margin: 16px 0 6px; font-size: 1rem; }
+    #report-box h2 { font-size: 1.1rem; }
+    #report-box > :first-child { margin-top: 0; }
+    #report-box p { margin: 6px 0; }
+    #report-box ul, #report-box ol { margin: 4px 0 8px 22px; }
+    #report-box li { margin: 3px 0; }
+    #report-box li.sub { margin-left: 18px; }
+    #report-box a { color: #58a6ff; }
+    #review-notes { background: #3d2d1f; border: 1px solid #9e6a03; color: #e3b341; border-radius: 6px; padding: 10px 14px; margin-bottom: 10px; font-size: 0.85rem; }
     #diff-box { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 14px; font-size: 0.85rem; white-space: pre-wrap; color: #8b949e; }
     .diff-new { color: #3fb950; }
     .diff-removed { color: #f85149; }
@@ -116,6 +125,7 @@
       <span style="color:#8b949e;font-size:0.8rem;margin-left:10px" id="job-id-label"></span>
     </div>
     <div id="timeline" aria-live="polite"></div>
+    <div id="review-notes" style="display:none"></div>
     <div id="report-box" style="display:none"></div>
     <div id="subq-box" style="display:none"></div>
     <div id="sources-box" style="display:none"></div>
@@ -170,6 +180,43 @@
       return String(text ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
+    // Reports are written in Markdown. Everything is escaped first, then a small set of formatting is applied,
+    // so page text can never inject HTML.
+    function inlineMd(s) {
+      return s
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+    }
+
+    function renderMarkdown(text) {
+      const out = [];
+      let list = null, para = [];
+      const flushPara = () => { if (para.length) { out.push(`<p>${para.join('<br>')}</p>`); para = []; } };
+      const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+      const openList = tag => { flushPara(); if (list !== tag) { closeList(); out.push(`<${tag}>`); list = tag; } };
+      for (const raw of String(text || '').split('\n')) {
+        const line = esc(raw.replace(/\s+$/, ''));
+        let m;
+        if (!line.trim()) { flushPara(); closeList(); continue; }
+        if ((m = line.match(/^\s*(#{1,4})\s+(.*)$/))) {
+          flushPara(); closeList();
+          const level = Math.min(4, m[1].length + 1);
+          out.push(`<h${level}>${inlineMd(m[2])}</h${level}>`);
+        } else if ((m = line.match(/^(\s*)[-*\u2022]\s+(.*)$/))) {
+          openList('ul');
+          out.push(`<li${m[1].length >= 2 ? ' class="sub"' : ''}>${inlineMd(m[2])}</li>`);
+        } else if ((m = line.match(/^(\s*)\d+[.)]\s+(.*)$/))) {
+          openList('ol');
+          out.push(`<li${m[1].length >= 2 ? ' class="sub"' : ''}>${inlineMd(m[2])}</li>`);
+        } else {
+          closeList();
+          para.push(inlineMd(line.trim()));
+        }
+      }
+      flushPara(); closeList();
+      return out.join('');
+    }
+
     function renderSources(data) {
       const badge = document.getElementById('source-badge');
       const origin = { cache: 'from cache', memory: 'from memory' }[data.origin];
@@ -222,7 +269,8 @@
         case 'searching': return ['🔎', `Searching (${(e.kinds || []).map(k => kindNames[k] || k).join(', ')}) for: ${e.question}`];
         case 'searched': return ['🔎', `Sub-question ${e.subq}: ${e.results} results` + (e.failed ? ` (${e.failed} search${e.failed === 1 ? '' : 'es'} failed)` : '')];
         case 'sources': return ['📚', `${e.total} sources (${(e.kinds || []).map(k => kindNames[k] || k).join(', ')})` +
-                                      (e.read_in_full ? `, ${e.read_in_full} read in full` : '')];
+                                      (e.read_in_full ? `, ${e.read_in_full} read in full` : '') +
+                                      (e.too_old ? `, ${e.too_old} older page${e.too_old === 1 ? '' : 's'} skipped` : '')];
         case 'extracting': return ['🧪', `Extracting facts for sub-question ${e.subq} from ${e.sources} sources…`];
         case 'extracted': return ['🧪', `Sub-question ${e.subq}: ${e.facts} facts`];
         case 'gap': return ['🧩', `Something is missing — searching again: ${(e.queries || []).join(' · ')}`];
@@ -399,6 +447,7 @@
       document.getElementById('job-status').className = 'status status-pending';
       document.getElementById('job-status').textContent = 'Submitting...';
       document.getElementById('report-box').style.display = 'none';
+      document.getElementById('review-notes').style.display = 'none';
       document.getElementById('sources-box').style.display = 'none';
       document.getElementById('source-badge').innerHTML = '';
       document.getElementById('export-actions').style.display = 'none';
@@ -450,8 +499,15 @@
           lastReport = data;
           document.getElementById('job-status').className = 'status status-done';
           document.getElementById('job-status').textContent = 'Complete';
-          document.getElementById('report-box').textContent = data.report;
+          document.getElementById('report-box').innerHTML = renderMarkdown(data.report);
           document.getElementById('report-box').style.display = 'block';
+          const notes = data.review_notes || [];
+          const notesBox = document.getElementById('review-notes');
+          notesBox.textContent = notes.length
+            ? `⚠ Not fully verified: the fact-checker still flagged ${notes.length} point${notes.length === 1 ? '' : 's'} ` +
+              'after the final rewrite. They are listed under "Fact-check notes" at the end of the report.'
+            : '';
+          notesBox.style.display = notes.length ? 'block' : 'none';
           renderSources(data);
           document.getElementById('export-actions').style.display = 'flex';
           // feedback teaches the writer bandit (Step 4c); only reports the pipeline just wrote can be rated

@@ -4,7 +4,7 @@ A multi-agent research system that reads the live web, research papers, news and
 
 > **Status (2026-11-13).**
 > - **Running live on AWS:** the research pipeline, multi-source search, safety guardrails and memory.
-> - **Built and unit-tested (347 tests), not yet run against live AWS:**
+> - **Built and unit-tested (369 tests), not yet run against live AWS:**
 >   - the benchmark
 >   - the critic panel
 >   - the learning loops
@@ -171,7 +171,7 @@ bash scripts/resume_safe.sh             # bring it back (the URL changes on each
 
 API keys (Groq, Tavily, LangSmith, the app's `API_KEY`) live in the Secrets Manager secret `research-agent/config`. A local Docker setup also exists (`docker compose up`, see `scripts/local_env.py`).
 
-**Tests:** `pip install -r requirements-dev.txt && pytest` runs 347 tests. They include end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit-convergence simulations.
+**Tests:** `pip install -r requirements-dev.txt && pytest` runs 369 tests. They include end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit-convergence simulations.
 
 ## Project layout
 

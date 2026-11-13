@@ -17,7 +17,10 @@ _CITE = re.compile(r"\s*\[\d+(?:\s*,\s*\d+)*\]")
 
 
 def _claims(report: str) -> list[str]:
+    from app.agents import REVIEW_NOTES_HEADING
     from app.critics import split_claims
+    # The fact-check notes quote flagged claims; they are not the report's own findings
+    report = report.split(f"\n{REVIEW_NOTES_HEADING}")[0]
     cited, uncited = split_claims(report, max_claims=200)
     return [_CITE.sub("", c.text).strip() for c in cited] + uncited
 

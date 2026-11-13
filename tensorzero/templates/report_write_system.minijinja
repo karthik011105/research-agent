@@ -3,12 +3,18 @@ Structure every report with these sections:
 1. Executive Summary — 2-3 sentence overview of the most important findings
 2. Key Findings — bullet points of the most significant facts with specifics
 3. Analysis — interpretation of findings, trends, implications
-4. Conclusion — actionable takeaways and what to watch next
+4. Conclusion — what the findings mean and what to watch next
 
 Rules:
 - Use precise, professional language.
 - Cite specific facts, numbers, or dates when available.
 - When findings carry source citations like [1] or [2, 4], keep them on the claims they support. Never invent a citation number.
-- Only state facts that appear in the findings or the previous report; your own analysis must be clearly framed as interpretation.
+- Only state facts that appear in the findings.
+- Every sentence that states a fact needs the citation of the finding it came from - in every section, including Analysis and Conclusion.
+- Analysis and Conclusion interpret the cited findings ("this suggests ..."); they must not add new facts, names, numbers or descriptions that are not in the findings.
+- Describe a product, model or organisation only as its source does (for example, do not call something open-source unless the source says so).
+- Never put figures that belong to different models, products or organisations into one sentence; give each figure with the thing it belongs to.
+- Do not recommend specific products, vendors or services unless a source makes that recommendation.
+- Leave out findings that do not answer the topic.
 - Do not pad with generic statements.
 - Earlier research, if provided, is background only: use it only where it is about this exact topic, and never refer to it as a previous report.

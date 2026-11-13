@@ -15,12 +15,17 @@ from app.config import Config
 from app.retry import with_retry
 from app.tools.scrape import enrich_sources
 from app.tools.search import (
-    BUDGETED_KINDS, KINDS, dedupe_new, drop_blocked, format_sources, interleave, merge_sources, search_kind,
+    BUDGETED_KINDS, KINDS, RECENCY_DAYS, dedupe_new, drop_blocked, format_sources, interleave, merge_sources,
+    prefer_recent, search_kind,
 )
 
 logger = logging.getLogger(__name__)
 
 _GAP_QUERIES = 2          # web-search queries a gap-check round may spend
+_GAP_RESERVE = 3          # source slots the first round leaves free, so a gap round can still add something
+_RECENCY_WORDS = re.compile(
+    r"\b(today|tonight|yesterday|this week|past week|last week|breaking|right now|this month|past month|"
+    r"latest|recent|recently|newest|currently|so far this year)\b", re.IGNORECASE)
 STRICT_FUNCTIONS = {"research_summarize", "report_write", "research_plan", "research_extract", "research_verify",
                     "critic_fact"}
 
@@ -66,6 +71,7 @@ class ResearchState(TypedDict):
     ltm_context: str             # related previous report passed to writer
     direct_reply: str            # planner decided the input is not a research topic and answered it
     sub_questions: list[SubQuestion]  # every sub-question so far (planner + gap rounds)
+    recency: str                 # "week" | "month" | "year" when the topic asks for recent news, else ""
     round_subq_ids: list[int]    # sub-questions being researched in the current round
     raw_results: Annotated[list[dict], operator.add]   # search branch outputs, tagged with round + sub-question
     branch_facts: Annotated[list[dict], operator.add]  # extract branch outputs, one per sub-question
@@ -88,6 +94,7 @@ class SearchTask(TypedDict):
     round: int
     subq: SubQuestion
     calls: list[tuple[str, str, bool]]   # (query, kind, may spend paid web-search budget)
+    recency: str                         # date limit for the searches ("" = none)
 
 
 class ExtractTask(TypedDict):
@@ -104,6 +111,7 @@ def initial_state(topic: str, session_id: str, session_history: list[dict], ltm_
         ltm_context=ltm_context,
         direct_reply="",
         sub_questions=[],
+        recency="",
         round_subq_ids=[],
         raw_results=[],
         branch_facts=[],
@@ -254,6 +262,17 @@ def parse_plan(reply: str, topic: str, max_subquestions: int, max_queries: int) 
     return [SubQuestion(id=i, **sq) for i, sq in enumerate(plan[:max_subquestions], start=1)]
 
 
+def parse_recency(reply: str, topic: str) -> str:
+    """The planner's time window for the topic. If its reply has none, words such as "today" or "latest" in the
+    topic still make the search prefer recent results."""
+    value = parse_json_object(reply).get("recency")
+    if isinstance(value, str) and value.strip().lower() in RECENCY_DAYS:
+        return value.strip().lower()
+    if value is None and _RECENCY_WORDS.search(topic):
+        return "week" if re.search(r"\b(today|tonight|yesterday|week|breaking|right now)\b", topic, re.I) else "month"
+    return ""
+
+
 def plan_calls(sub_questions: list[SubQuestion], web_limit: int) -> dict[int, list[tuple[str, str, bool]]]:
     """Every (query, kind) pair to run, per sub-question. Paid web search (web/news kinds) is shared out
     round-robin - each sub-question's first query before anyone's second - until web_limit is spent.
@@ -303,6 +322,32 @@ def strip_citations(report: str) -> str:
     return re.sub(r"\s?\[\d+(?:\s*,\s*\d+)*\]", "", report).rstrip()
 
 
+REVIEW_NOTES_HEADING = "## Fact-check notes"
+
+
+def review_notes(state: dict) -> list[str]:
+    """What the critic still flagged in the final draft - empty when it approved it. Rewrites are capped, so a
+    report can end with problems left; they are shown to the reader instead of being dropped silently."""
+    if state.get("verified"):
+        return []
+    flagged = [c for c in state.get("claim_verdicts") or [] if c.get("decision") != "keep"]
+    if flagged:
+        return [(c.get("text") or "")[:240] + (f" ({c['fix'][:200]})" if c.get("fix") else "") for c in flagged][:10]
+    text = re.sub(r"^\s*NO\b[\s.:\-\u2014]*", "", state.get("critic_feedback") or "", flags=re.IGNORECASE)
+    lines = [line.strip().lstrip("-*\u2022 ").strip() for line in text.splitlines()]
+    notes = [line[:300] for line in lines if len(line) > 3][:10]
+    return notes or ["The fact-checker did not approve the final draft."]
+
+
+def with_review_notes(report: str, notes: list[str]) -> str:
+    """Appends the unresolved points as the report's last section, so the PDF, cache and memory keep them too."""
+    if not notes:
+        return report
+    return (f"{report}\n\n{REVIEW_NOTES_HEADING}\nThe fact-checker still flagged these points after the final "
+            f"rewrite. Check them against the cited sources before relying on them:\n"
+            + "\n".join(f"- {n}" for n in notes))
+
+
 def _history_block(session_history: list[dict]) -> str:
     if not session_history:
         return ""
@@ -321,8 +366,8 @@ class PlannerAgent:
         self.config = config
 
     @traceable(run_type="llm", name="agent:planner")
-    async def run(self, topic: str, session_history: list[dict]) -> tuple[list[SubQuestion], str]:
-        """(plan, "") for a research topic, or ([], answer) when the input is not something to research."""
+    async def run(self, topic: str, session_history: list[dict]) -> tuple[list[SubQuestion], str, str]:
+        """(plan, "", recency) for a research topic, or ([], answer, "") when the input is not something to research."""
         logger.info(f"PlannerAgent: planning research for '{topic}'")
         reply = await _tz_call(
             self.config,
@@ -339,7 +384,11 @@ class PlannerAgent:
             f'- "paper": academic papers (arXiv, Semantic Scholar) for scientific or technical research; '
             f"write these queries as 2-5 keywords\n"
             f'- "community": practitioner discussion on Hacker News, for opinions, developer experience and tools\n'
-            f'Reply with JSON only: {{"sub_questions": [{{"question": "...", "queries": ["..."], "kinds": ["web"]}}]}}\n\n'
+            f'Also set "recency" to how recent the information must be: "week" if the topic asks about today, '
+            f'this week or breaking news; "month" if it asks for the latest, new or recent developments or this '
+            f'month; "year" for this year; "" if it does not depend on dates.\n'
+            f'Reply with JSON only: {{"recency": "", "sub_questions": [{{"question": "...", "queries": ["..."], '
+            f'"kinds": ["web"]}}]}}\n\n'
             f"Exception: if the input is clearly not something to research - small talk, a question about you, or a "
             f"trivial fact or calculation - do not plan; reply with JSON only: "
             f'{{"intent": "chat", "reply": "<a short, friendly answer>"}}. A short subject such as "quantum computing" '
@@ -348,10 +397,11 @@ class PlannerAgent:
         parsed = parse_json_object(reply)
         if parsed.get("intent") == "chat" and isinstance(parsed.get("reply"), str) and parsed["reply"].strip():
             logger.info("PlannerAgent: not a research topic, answering directly")
-            return [], parsed["reply"].strip()[:2000]
+            return [], parsed["reply"].strip()[:2000], ""
         plan = parse_plan(reply, topic, self.config.max_subquestions, self.config.queries_per_subquestion)
-        logger.info(f"PlannerAgent: {[(sq['question'], sq['kinds']) for sq in plan]}")
-        return plan, ""
+        recency = parse_recency(reply, topic)
+        logger.info(f"PlannerAgent: {[(sq['question'], sq['kinds']) for sq in plan]}, recency={recency or 'any'}")
+        return plan, "", recency
 
 
 class ExtractAgent:
@@ -378,7 +428,8 @@ class ExtractAgent:
             f"Topic: {topic}\n{focus}"
             f"Today's date: {date.today().isoformat()}\n\n"
             f"Extract the key facts that answer the {'sub-question' if focus else 'topic'} from the sources below "
-            f"as at most 8 bullet points. "
+            f"as at most 8 bullet points. Give the date of each event or announcement when the source states "
+            f"it. Only include facts that answer the {'sub-question' if focus else 'topic'}. "
             f"End every bullet with the id of the source it came from, e.g. [2] or [1, 3].\n\n"
             f"{format_sources(sources)}",
         ))
@@ -399,8 +450,10 @@ class GapCheckAgent:
             f"Research topic: {topic}\n"
             f"Queries already searched: {json.dumps(previous_queries)}\n\n"
             f"Facts found so far:\n{facts}\n\n"
-            f"Is an important part of the topic still missing? If yes, give at most {_GAP_QUERIES} new search queries "
-            f'that would fill the gap and the source kind to search ("web", "news", "paper" or "community"). '
+            f"Is an important part of the topic, as the user asked it, still missing? If yes, give at most "
+            f"{_GAP_QUERIES} new search queries that would fill the gap and the source kind to search "
+            f'("web", "news", "paper" or "community"). Stay within the question: do not widen it to related '
+            f"subjects (such as regulation, ethics or controversies) unless the topic asks about them. "
             f"If the facts are enough, return an empty list.\n"
             f'Reply with JSON only: {{"queries": [], "kind": "web"}}',
         )
@@ -419,8 +472,12 @@ class WriterAgent:
 
     @traceable(run_type="llm", name="agent:writer")
     async def run(self, topic: str, facts: str, live_sources: bool, ltm_context: str, critic_feedback: str,
-                  variant: str | None = None) -> str:
+                  variant: str | None = None, recency: str = "") -> str:
         logger.info("WriterAgent: drafting report")
+        recency_rule = (
+            "The topic asks for recent information: lead with the newest findings, give the date of each "
+            "development, and say plainly when something is older (for example 'in March 2026'). Do not present "
+            "older material as new.\n" if recency else "")
 
         ltm_section = ""
         if ltm_context:
@@ -455,8 +512,9 @@ class WriterAgent:
             f"Include: Executive Summary, Key Findings, Analysis, and Conclusion.\n"
             f"Cover every sub-question in the findings (each one under '###'); if one has no findings, say in one "
             f"line that no reliable information was found for it. Attribute each claim to what the source actually "
-            f"says - do not merge details from different sources or documents into one claim.\n"
-            f"{citation_rule}",
+            f"says - do not merge details from different sources or documents into one claim, and never put "
+            f"figures that belong to different models, products or organisations into one sentence.\n"
+            f"{recency_rule}{citation_rule}",
             **({"variant": variant} if variant else {}),   # only when the writer bandit chose one
         ))
 
@@ -472,7 +530,7 @@ async def rewrite_for_safety(config: Config, state: dict, policies: list[str]) -
         "step-by-step instructions, payloads, or operational detail."
     )
     report = await WriterAgent(config).run(state["topic"], state["facts"], state["live_sources"],
-                                          state.get("ltm_context", ""), feedback)
+                                          state.get("ltm_context", ""), feedback, recency=state.get("recency", ""))
     return report + (sources_section(report, state["sources"]) if state["live_sources"] else "")
 
 
@@ -542,19 +600,21 @@ class OrchestratorAgent:
     @traceable(run_type="chain", name="orchestrator:plan")
     async def plan_node(self, state: ResearchState) -> dict:
         await progress.emit("planning")
-        plan, direct_reply = await self.planner.run(state["topic"], state.get("session_history", []))
+        plan, direct_reply, recency = await self.planner.run(state["topic"], state.get("session_history", []))
         if direct_reply:
             await progress.emit("direct_answer")
         else:
             await progress.emit("planned", sub_questions=[{"id": sq["id"], "question": sq["question"],
                                                            "kinds": sq["kinds"]} for sq in plan])
-        return {"sub_questions": plan, "round_subq_ids": [sq["id"] for sq in plan], "direct_reply": direct_reply}
+        return {"sub_questions": plan, "round_subq_ids": [sq["id"] for sq in plan], "direct_reply": direct_reply,
+                "recency": recency}
 
     def _search_sends(self, state: ResearchState, web_limit: int) -> list[Send] | str:
         round_no = state["search_rounds"] + 1
         subqs = [sq for sq in state["sub_questions"] if sq["id"] in state["round_subq_ids"]]
         calls = plan_calls(subqs, web_limit)
-        sends = [Send("search_branch", SearchTask(round=round_no, subq=sq, calls=calls[sq["id"]]))
+        sends = [Send("search_branch", SearchTask(round=round_no, subq=sq, calls=calls[sq["id"]],
+                                                  recency=state.get("recency", "")))
                  for sq in subqs if calls[sq["id"]]]
         return sends or "merge"
 
@@ -568,8 +628,10 @@ class OrchestratorAgent:
         subq = task["subq"]
         await progress.emit("searching", subq=subq["id"], question=subq["question"],
                             kinds=sorted({kind for _, kind, _ in task["calls"]}), queries=len(task["calls"]))
+        # Injected searches (benchmark snapshots, attack runs) replay fixed results and take no date limit
+        dated = {"recency": task["recency"]} if task.get("recency") and self.search_fn is None else {}
         outcomes = await asyncio.gather(
-            *((self.search_fn or search_kind)(self.redis, self.config, q, kind, allow_paid=paid)
+            *((self.search_fn or search_kind)(self.redis, self.config, q, kind, allow_paid=paid, **dated)
               for q, kind, paid in task["calls"]),
             return_exceptions=True,
         )
@@ -593,8 +655,14 @@ class OrchestratorAgent:
         candidates = drop_blocked(unique, self.config.blocked_domains)
         if len(candidates) < len(unique):
             await progress.emit("defense", what="blocked_domains", count=len(unique) - len(candidates))
+        # A topic about today's news: pages clearly older than it asks for don't take a slot
+        candidates, too_old = prefer_recent(candidates, state.get("recency", ""), date.today())
+        # The first round leaves a few slots free, so a gap-check round can still add sources
+        limit = self.config.search_max_sources
+        if round_no == 1 and self.config.search_max_rounds > 1:
+            limit = max(1, limit - _GAP_RESERVE)
         # Scrape only what can still make the cut, plus a few spares for pages that fail to scrape
-        room = max(0, self.config.search_max_sources - len(existing))
+        room = max(0, limit - len(existing))
         window = await enrich_sources(self.redis, self.config, candidates[:room + self.config.scrape_max_pages])
         if self.rulebook is not None and self.rulebook.patterns:
             from app.security.rules import sanitize_sources
@@ -604,10 +672,10 @@ class OrchestratorAgent:
                 await progress.emit("defense", what="injection_rule", count=cleaned)
         # A GDELT entry is only a headline until its article is scraped - not worth citing on its own
         window = [s for s in window if s["provider"] != "gdelt" or s.get("scraped")]
-        sources = merge_sources([window], existing, self.config)
+        sources = merge_sources([window], existing, self.config, limit=limit)
         await progress.emit("sources", total=len(sources), new=len(sources) - len(existing),
                             read_in_full=sum(1 for s in sources if s.get("scraped")),
-                            kinds=sorted({s.get("kind", "web") for s in sources}))
+                            kinds=sorted({s.get("kind", "web") for s in sources}), too_old=too_old)
         update = {
             "sources": sources,
             "live_sources": bool(sources),
@@ -654,6 +722,9 @@ class OrchestratorAgent:
     async def gap_check_node(self, state: ResearchState) -> dict:
         if not state["live_sources"] or state["search_rounds"] >= self.config.search_max_rounds:
             return {"needs_more": False}
+        if len(state["sources"]) >= self.config.search_max_sources:
+            # Every source slot is taken: another round could only spend searches and an LLM call for nothing
+            return {"needs_more": False}
         searched = [q for sq in state["sub_questions"] for q in sq["queries"]]
         queries, kinds = await self.gap_agent.run(state["topic"], state["facts"], searched)
         if not queries:
@@ -680,6 +751,7 @@ class OrchestratorAgent:
             state.get("ltm_context", ""),
             state.get("critic_feedback", ""),
             variant=variant or None,
+            recency=state.get("recency", ""),
         )
         if state["live_sources"]:
             report += sources_section(report, state["sources"])

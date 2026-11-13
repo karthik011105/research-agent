@@ -34,7 +34,7 @@ from app.memory import session_add, session_get, ltm_search, ltm_search_related,
 from app.queue import (
     push_job, get_result, set_result, ensure_group, consume_jobs, ack_job, requeue_job, start_attempt,
 )
-from app.agents import build_graph, initial_state, quick_reply, rewrite_for_safety
+from app.agents import build_graph, initial_state, quick_reply, review_notes, rewrite_for_safety, with_review_notes
 from app.output import generate_pdf, generate_json_report, get_report_diff
 from app.eval import evaluate_report, run_batch_evaluation, fetch_recent_topics
 
@@ -154,6 +154,7 @@ async def _process_job(data: dict, msg_id: str):
                 origin = "memory"
                 await progress.emit("memory_hit", where="long-term memory")
 
+        notes: list[str] = []   # what the critic still flagged in the final draft (pipeline runs only)
         if hit:
             report_text, sources = hit["report"], hit.get("sources") or []
             live_sources, search_rounds, sub_questions, scraped_count = bool(sources), 0, [], 0
@@ -187,6 +188,11 @@ async def _process_job(data: dict, msg_id: str):
             if not ok:
                 await publish({"status": "blocked", "error": reason})
                 return
+            # Rewrites are capped: problems the critic still found are shown with the report, not dropped silently
+            notes = review_notes(final_state)
+            if notes:
+                log.info(f"Final draft still has {len(notes)} flagged point(s) - attaching them to the report")
+                report_text = with_review_notes(report_text, notes)
             if memory_write_allowed(config, final_state):
                 await cache_set(redis_client, config, topic, report_text, sources, session_id)
                 await ltm_store(config, topic, report_text, str(uuid.uuid4()), sources, session_id)
@@ -217,6 +223,7 @@ async def _process_job(data: dict, msg_id: str):
             "providers_used": sorted({s.get("provider", "") for s in sources} - {""}),
             "scraped_count": scraped_count,
             "writer_variant": (final_state.get("writer_variant") or "") if origin == "pipeline" else "",
+            "review_notes": notes,
             "monitor_id": monitor_id,
             # page text stays server-side; the client only needs what it shows
             "sources": [{k: s.get(k, "") for k in ("id", "title", "url", "published_date", "provider", "kind")} for s in sources],

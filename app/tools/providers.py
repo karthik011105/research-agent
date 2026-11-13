@@ -180,11 +180,12 @@ def parse_openalex(payload: dict) -> list[dict]:
     return results
 
 
-async def fetch_openalex(query: str, max_results: int) -> list[dict]:
+async def fetch_openalex(query: str, max_results: int, since: str = "") -> list[dict]:
+    """since (YYYY-MM-DD) limits results to works published on or after that date."""
     async with httpx.AsyncClient(timeout=30, headers=HEADERS) as client:
         r = await client.get(OPENALEX_URL, params={
             "search": " ".join(keyword_terms(query, 6)) or query,
-            "filter": "has_abstract:true",
+            "filter": "has_abstract:true" + (f",from_publication_date:{since}" if since else ""),
             "per-page": max_results,
             "select": "id,doi,title,display_name,publication_date,publication_year,abstract_inverted_index,"
                       "cited_by_count,primary_location",
@@ -211,7 +212,7 @@ def parse_gdelt(payload: dict) -> list[dict]:
     ]
 
 
-async def fetch_gdelt(query: str, max_results: int) -> list[dict]:
+async def fetch_gdelt(query: str, max_results: int, timespan: str = "1m") -> list[dict]:
     terms = keyword_terms(query, 5)
     async with httpx.AsyncClient(timeout=30, headers=HEADERS) as client:
         r = await client.get(GDELT_URL, params={
@@ -219,7 +220,7 @@ async def fetch_gdelt(query: str, max_results: int) -> list[dict]:
             "mode": "artlist",
             "format": "json",
             "maxrecords": max_results,
-            "timespan": "1m",
+            "timespan": timespan,
             "sort": "hybridrel",
         })
         r.raise_for_status()
@@ -253,14 +254,14 @@ def parse_hn(hit: dict, item: dict | None) -> dict:
                        (hit.get("created_at") or "")[:10], "hackernews", "community")
 
 
-async def fetch_hackernews(query: str, max_results: int) -> list[dict]:
-    """The discussion itself is the source: story + its most-replied comments."""
+async def fetch_hackernews(query: str, max_results: int, since_ts: int = 0) -> list[dict]:
+    """The discussion itself is the source: story + its most-replied comments. since_ts (Unix time) limits
+    results to stories posted after it."""
+    params = {"query": " ".join(keyword_terms(query, 5)) or query, "tags": "story", "hitsPerPage": max_results}
+    if since_ts:
+        params["numericFilters"] = f"created_at_i>{since_ts}"
     async with httpx.AsyncClient(timeout=30, headers=HEADERS) as client:
-        r = await client.get(HN_SEARCH_URL, params={
-            "query": " ".join(keyword_terms(query, 5)) or query,
-            "tags": "story",
-            "hitsPerPage": max_results,
-        })
+        r = await client.get(HN_SEARCH_URL, params=params)
         r.raise_for_status()
         hits = [h for h in r.json().get("hits", []) if h.get("objectID") and (h.get("num_comments") or 0) > 0]
 
