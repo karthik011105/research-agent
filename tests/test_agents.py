@@ -276,3 +276,15 @@ async def test_graph_falls_back_to_model_knowledge_when_search_unavailable(confi
     assert "research_summarize" in llm.calls and "research_extract" not in llm.calls
     assert llm.calls.count("research_plan") == 1   # no gap check without live sources
     assert final["error"] == "search: No search API key configured"
+
+
+async def test_blocked_domains_never_become_sources(config, redis, monkeypatch, fake_search):
+    async def search_kind(redis_, config_, query, kind, allow_paid=True):
+        return [{**make_source(1, url="https://polymarket.com/event/x"), "kind": kind},
+                {**make_source(2, url="https://reuters.com/a"), "kind": kind}]
+
+    monkeypatch.setattr(agents, "search_kind", search_kind)
+    monkeypatch.setattr(agents, "_tz_call", FakeLLM(critic_replies=["YES"], gap_reply={"queries": []}))
+    config.search_max_rounds = 1
+    final = await build_graph(config, redis).ainvoke(initial_state("AI safety bill odds", "s", [], ""))
+    assert [s["url"] for s in final["sources"]] == ["https://reuters.com/a"]

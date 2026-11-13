@@ -13,7 +13,9 @@ from langsmith import traceable
 from app.config import Config
 from app.retry import with_retry
 from app.tools.scrape import enrich_sources
-from app.tools.search import BUDGETED_KINDS, KINDS, dedupe_new, format_sources, interleave, merge_sources, search_kind
+from app.tools.search import (
+    BUDGETED_KINDS, KINDS, dedupe_new, drop_blocked, format_sources, interleave, merge_sources, search_kind,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -536,7 +538,8 @@ class OrchestratorAgent:
         round_no = state["search_rounds"] + 1
         batch = sorted((r for r in state["raw_results"] if r["round"] == round_no), key=lambda r: r["subq"])
         existing = state["sources"]
-        candidates = dedupe_new([r["results"] for r in batch], existing)
+        # Low-quality domains go first, so they never take a slot or a scrape
+        candidates = drop_blocked(dedupe_new([r["results"] for r in batch], existing), self.config.blocked_domains)
         # Scrape only what can still make the cut, plus a few spares for pages that fail to scrape
         room = max(0, self.config.search_max_sources - len(existing))
         window = await enrich_sources(self.redis, self.config, candidates[:room + self.config.scrape_max_pages])

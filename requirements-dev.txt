@@ -5,6 +5,7 @@ redis[hiredis]==8.0.1
 langgraph==1.2.6
 langchain-core==1.4.8
 langsmith==0.9.3
+numpy==2.5.0
 trafilatura==2.0.0
 boto3==1.43.36
 pytest==8.4.2

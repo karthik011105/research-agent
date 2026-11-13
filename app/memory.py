@@ -1,13 +1,11 @@
 import difflib
 import json
-import asyncio
 from datetime import datetime
 import redis.asyncio as aioredis
-from sentence_transformers import SentenceTransformer
 from app.config import Config
+from app.embeddings import embed
 from app.pool import get_pool
 
-_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 
 async def session_add(redis: aioredis.Redis, config: Config, session_id: str, role: str, content: str) -> None:
@@ -46,7 +44,7 @@ async def db_migrate(config: Config) -> None:
 
 
 async def ltm_store(config: Config, topic: str, report: str, report_id: str, sources: list[dict]) -> None:
-    embedding = await asyncio.to_thread(lambda: _model.encode(topic).tolist())
+    embedding = await embed(topic)
     pool = get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
@@ -60,7 +58,7 @@ async def ltm_store(config: Config, topic: str, report: str, report_id: str, sou
 
 
 async def ltm_search(config: Config, topic: str) -> dict | None:
-    embedding = await asyncio.to_thread(lambda: _model.encode(topic).tolist())
+    embedding = await embed(topic)
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -83,20 +81,20 @@ async def ltm_search(config: Config, topic: str) -> dict | None:
 
 async def ltm_search_related(config: Config, topic: str) -> str | None:
     """
-    Finds a related (but not identical) previous report to use as reference context
-    for the writer agent. Uses a lower threshold than ltm_search so it finds
-    nearby topics rather than exact matches.
+    Finds a related (but not identical) previous report to use as background for the writer: the MOST SIMILAR
+    report between ltm_related_min and just below the exact-match threshold. (It used to take the most recent
+    report above 0.5 similarity, so any recent AI report - e.g. on chips - leaked into an AI regulation report.)
     """
-    embedding = await asyncio.to_thread(lambda: _model.encode(topic).tolist())
+    embedding = await embed(topic)
     pool = get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT report FROM reports
-            WHERE 1 - (embedding <=> $1::vector) BETWEEN 0.5 AND $2
-            ORDER BY created_at DESC LIMIT 1
+            SELECT report, 1 - (embedding <=> $1::vector) AS similarity FROM reports
+            WHERE 1 - (embedding <=> $1::vector) BETWEEN $3 AND $2
+            ORDER BY similarity DESC, created_at DESC LIMIT 1
             """,
-            str(embedding), config.ltm_threshold - 0.01,
+            str(embedding), config.ltm_threshold - 0.01, config.ltm_related_min,
         )
         return row["report"] if row else None
 

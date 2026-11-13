@@ -51,6 +51,7 @@ class Config:
         # Semantic cache
         self.cache_ttl: int = int(data.get("CACHE_TTL", 3600))
         self.cache_similarity_threshold: float = float(data.get("CACHE_SIMILARITY_THRESHOLD", 0.85))
+        self.cache_max_entries: int = int(data.get("CACHE_MAX_ENTRIES", 1000))
 
         # Session memory
         self.session_ttl: int = int(data.get("SESSION_TTL", 1800))
@@ -61,6 +62,8 @@ class Config:
         # Reports older than this are re-researched with live search instead of reused
         self.ltm_fresh_hours: int = int(data.get("LTM_FRESH_HOURS", 24))
         self.ltm_threshold: float = float(data.get("LTM_THRESHOLD", 0.88))
+        # Minimum similarity for a past report to be offered to the writer as background on a related topic
+        self.ltm_related_min: float = float(data.get("LTM_RELATED_MIN", 0.65))
         self.ltm_diff_threshold: float = float(data.get("LTM_DIFF_THRESHOLD", 0.7))
         self.ltm_diff_limit: int = int(data.get("LTM_DIFF_LIMIT", 5))
         self.ivfflat_lists: int = int(data.get("IVFFLAT_LISTS", 100))
@@ -94,6 +97,11 @@ class Config:
                 "ENABLED_PROVIDERS", "tavily,brave,openalex,arxiv,semantic_scholar,gdelt,hackernews").split(",") if p.strip()
         ]
         self.semantic_scholar_api_key: str = data.get("SEMANTIC_SCHOLAR_API_KEY", "")
+        # Sources never cited: prediction/betting markets state odds, not facts. Subdomains are included.
+        self.blocked_domains: list[str] = [
+            d.strip().lower() for d in data.get(
+                "BLOCKED_DOMAINS", "polymarket.com,kalshi.com,manifold.markets,predictit.org").split(",") if d.strip()
+        ]
         self.max_subquestions: int = int(data.get("MAX_SUBQUESTIONS", 3))
         self.queries_per_subquestion: int = int(data.get("QUERIES_PER_SUBQUESTION", 2))
         self.scrape_max_pages: int = int(data.get("SCRAPE_MAX_PAGES", 4))

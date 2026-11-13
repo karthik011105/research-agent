@@ -294,7 +294,7 @@ async def download_pdf(job_id: str):
 async def stats():
     info = await redis_client.info()
     keys = await redis_client.dbsize()
-    cache_keys = len([k async for k in redis_client.scan_iter("semantic:*")])
+    cache_keys = await redis_client.hlen("semantic:index")
     session_keys = len([k async for k in redis_client.scan_iter("session:*")])
     search_cache_keys = len([k async for k in redis_client.scan_iter("search:*")])
     searches_today = int(await redis_client.get(f"search_budget:{date.today().isoformat()}") or 0)

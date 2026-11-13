@@ -99,3 +99,15 @@ async def test_daily_budget_blocks_extra_searches(config, redis):
         await web_search(redis, config, "second")
     # cached queries don't spend budget
     assert await web_search(redis, config, "first")
+
+
+def test_blocklist_matches_domain_and_subdomains_only():
+    from app.tools.search import drop_blocked, is_blocked
+    blocked = ["polymarket.com", "kalshi.com"]
+    assert is_blocked("https://polymarket.com/event/us-enacts-ai-safety-bill", blocked)
+    assert is_blocked("https://news.Polymarket.com/x", blocked)
+    assert not is_blocked("https://notpolymarket.com/x", blocked)       # suffix must be a whole domain
+    assert not is_blocked("https://reuters.com/polymarket.com", blocked)  # path doesn't count
+    sources = [make_source(1, url="https://polymarket.com/e"), make_source(2)]
+    assert [s["url"] for s in drop_blocked(sources, blocked)] == ["https://example.com/2"]
+    assert drop_blocked(sources, []) == sources

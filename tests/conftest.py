@@ -33,6 +33,7 @@ def config():
         scrape_timeout=5.0,
         scrape_max_bytes=200_000,
         llm_concurrency=2,
+        blocked_domains=["polymarket.com", "kalshi.com"],
     )
 
 

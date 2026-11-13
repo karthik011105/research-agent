@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from datetime import date
+from urllib.parse import urlsplit
 import httpx
 import redis.asyncio as aioredis
 from langsmith import traceable
@@ -221,6 +222,16 @@ async def search_kind(redis: aioredis.Redis, config: Config, query: str, kind: s
 
 def _title_key(title: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", title.lower()))
+
+
+def is_blocked(url: str, blocked_domains: list[str]) -> bool:
+    """True if the URL's host is a blocked domain or one of its subdomains (e.g. news.polymarket.com)."""
+    host = (urlsplit(url).hostname or "").lower().rstrip(".")
+    return any(host == d or host.endswith("." + d) for d in blocked_domains)
+
+
+def drop_blocked(sources: list[dict], blocked_domains: list[str]) -> list[dict]:
+    return [s for s in sources if not is_blocked(s["url"], blocked_domains)] if blocked_domains else sources
 
 
 def dedupe_new(result_lists: list[list[dict]], existing: list[dict]) -> list[dict]:
