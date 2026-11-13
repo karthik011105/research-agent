@@ -143,6 +143,12 @@
     function renderSources(data) {
       const badge = document.getElementById('source-badge');
       const origin = { cache: 'from cache', memory: 'from memory' }[data.origin];
+      if (data.origin === 'assistant') {
+        badge.innerHTML = '<span class="badge badge-origin">Quick answer · no research needed</span>';
+        document.getElementById('subq-box').style.display = 'none';
+        document.getElementById('sources-box').style.display = 'none';
+        return;
+      }
       badge.innerHTML = (data.live_sources
         ? `<span class="badge badge-live">Live web · ${data.sources_count} sources</span>`
         : '<span class="badge badge-model">Model knowledge only</span>')

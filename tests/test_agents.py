@@ -5,8 +5,9 @@ import pytest
 from langgraph.graph import END
 from app import agents
 from app.agents import (
-    OrchestratorAgent, build_graph, cited_ids, clean_kinds, clean_queries, initial_state, normalize_citations,
-    parse_json_object, parse_plan, plan_calls, sources_section, response_text, strip_citations,
+    ABOUT_ME, OrchestratorAgent, build_graph, cited_ids, clean_kinds, clean_queries, initial_state,
+    normalize_citations, parse_json_object, parse_plan, plan_calls, quick_reply, sources_section, response_text,
+    strip_citations,
 )
 from app.tools.search import SearchUnavailable
 from tests.conftest import make_source
@@ -73,6 +74,31 @@ def test_response_text_skips_reasoning_blocks():
 def test_strip_citations_removes_markers_and_sources_list():
     old = "## Summary\nChips grew 20% [1] and [2, 3].\n\n## Sources\n[1] Old page — https://old.com"
     assert strip_citations(old) == "## Summary\nChips grew 20% and."
+
+
+@pytest.mark.parametrize("text", ["hi", "Hello!", "who are you?", "who r u", "What can you do", "help", "hey there"])
+def test_quick_reply_answers_small_talk(text):
+    assert quick_reply(text) == ABOUT_ME
+
+
+def test_quick_reply_leaves_research_topics_alone():
+    assert quick_reply("thanks!").startswith("You're welcome")
+    for topic in ["Who are the leading AI chip makers?", "quantum computing", "help desk automation trends"]:
+        assert quick_reply(topic) is None
+
+
+async def test_planner_can_answer_directly_and_skip_research(config, redis, monkeypatch, fake_search):
+    calls = []
+
+    async def fake_llm(config_, function_name, message):
+        calls.append(function_name)
+        return '{"intent": "chat", "reply": "2 + 2 = 4."}'
+
+    monkeypatch.setattr(agents, "_tz_call", fake_llm)
+    final = await build_graph(config, redis).ainvoke(initial_state("what is 2+2", "s", [], ""))
+    assert final["direct_reply"] == "2 + 2 = 4."
+    assert calls == ["research_plan"] and fake_search == []      # no searches, no writer, no critic
+    assert final["report"] == "" and final["sources"] == []
 
 
 def test_parse_plan_validates_sub_questions():

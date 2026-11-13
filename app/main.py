@@ -23,7 +23,7 @@ from app.cache import cache_get, cache_set
 from app.guardrails import validate_input, validate_output
 from app.memory import session_add, session_get, ltm_search, ltm_search_related, ltm_store, ltm_diff, db_migrate
 from app.queue import push_job, get_result, set_result, ensure_group, consume_jobs, ack_job
-from app.agents import build_graph, initial_state, rewrite_for_safety
+from app.agents import build_graph, initial_state, quick_reply, rewrite_for_safety
 from app.output import generate_pdf, generate_json_report, get_report_diff
 from app.eval import evaluate_report, run_batch_evaluation, fetch_recent_topics
 
@@ -53,6 +53,15 @@ async def _worker_loop():
             await asyncio.sleep(1)
 
 
+def _direct_result(topic: str, reply: str) -> dict:
+    """Result shape for inputs answered without research (greetings, questions about the assistant)."""
+    return {
+        "status": "done", "topic": topic, "report": reply, "diff": None, "origin": "assistant",
+        "live_sources": False, "search_rounds": 0, "sources_count": 0, "sub_questions": [],
+        "providers_used": [], "scraped_count": 0, "sources": [],
+    }
+
+
 async def _process_job(data: dict, msg_id: str):
     job_id = data["job_id"]
     topic = data["topic"]
@@ -62,6 +71,13 @@ async def _process_job(data: dict, msg_id: str):
     log = logging.getLogger(f"job.{job_id[:8]}")
     try:
         log.info(f"Starting job for topic: {topic}")
+
+        # Greetings / "who are you?" are not research topics: answer instantly, spend no searches or LLM calls
+        direct = quick_reply(topic)
+        if direct:
+            log.info("Not a research topic - instant reply")
+            await set_result(redis_client, config, job_id, _direct_result(topic, direct))
+            return
 
         # Fetch session history before any branch — agent always receives it
         session_history = await session_get(redis_client, session_id)
@@ -89,6 +105,13 @@ async def _process_job(data: dict, msg_id: str):
                 log.info("Found related LTM context for writer agent")
             # session history makes the planner context-aware; ltm_context lets the writer build on prior research
             final_state = await graph.ainvoke(initial_state(topic, session_id, session_history, ltm_context))
+            if final_state.get("direct_reply"):
+                # Planner judged it not a research topic: no report to cache, remember or evaluate
+                ok, reason, _ = await validate_output(config, final_state["direct_reply"])
+                await set_result(redis_client, config, job_id,
+                                 _direct_result(topic, final_state["direct_reply"]) if ok
+                                 else {"status": "blocked", "error": reason})
+                return
             report_text = final_state["report"]
             live_sources = final_state["live_sources"]
             sources = final_state["sources"] if live_sources else []

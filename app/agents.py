@@ -19,6 +19,33 @@ logger = logging.getLogger(__name__)
 
 _GAP_QUERIES = 2          # web-search queries a gap-check round may spend
 
+ABOUT_ME = (
+    "I'm the Autonomous Research Agent. Give me a topic and I research it for you: I split it into "
+    "sub-questions, search the live web, news, research papers (OpenAlex, arXiv) and Hacker News, read the "
+    "sources, and write a structured report where every claim is cited [n] to its source. A critic agent then "
+    "checks the claims against those sources.\n\n"
+    "Under the hood: a LangGraph multi-agent pipeline on AWS, using open-source models (gpt-oss, Qwen) served "
+    "by Groq - not ChatGPT or the OpenAI API.\n\n"
+    "Try a topic like \"latest developments in small language models on phones\" and tick Fresh search for "
+    "today's sources."
+)
+
+_SMALL_TALK = re.compile(
+    r"^(hi+|hello+|hey+|yo|hola|namaste|good (morning|afternoon|evening)|thanks?( you)?|thank u|ok(ay)?|help|"
+    r"who (are|r) (you|u)|what (are|r) (you|u)|what can (you|u) do|how do (you|u) work|what is this( app)?|"
+    r"introduce yourself)( there)?[\s!.?]*$",
+    re.IGNORECASE,
+)
+
+
+def quick_reply(text: str) -> str | None:
+    """Greetings and questions about the assistant itself get an instant answer: no LLM call, no searches."""
+    if _SMALL_TALK.match(" ".join(text.split())):
+        if re.match(r"\s*(thanks?|thank u)", text, re.IGNORECASE):
+            return "You're welcome! Send another topic whenever you like."
+        return ABOUT_ME
+    return None
+
 
 class SubQuestion(TypedDict):
     id: int
@@ -32,6 +59,7 @@ class ResearchState(TypedDict):
     session_id: str
     session_history: list[dict]  # prior conversation turns passed into agent
     ltm_context: str             # related previous report passed to writer
+    direct_reply: str            # planner decided the input is not a research topic and answered it
     sub_questions: list[SubQuestion]  # every sub-question so far (planner + gap rounds)
     round_subq_ids: list[int]    # sub-questions being researched in the current round
     raw_results: Annotated[list[dict], operator.add]   # search branch outputs, tagged with round + sub-question
@@ -67,6 +95,7 @@ def initial_state(topic: str, session_id: str, session_history: list[dict], ltm_
         session_id=session_id,
         session_history=session_history,
         ltm_context=ltm_context,
+        direct_reply="",
         sub_questions=[],
         round_subq_ids=[],
         raw_results=[],
@@ -260,7 +289,8 @@ class PlannerAgent:
         self.config = config
 
     @traceable(run_type="llm", name="agent:planner")
-    async def run(self, topic: str, session_history: list[dict]) -> list[SubQuestion]:
+    async def run(self, topic: str, session_history: list[dict]) -> tuple[list[SubQuestion], str]:
+        """(plan, "") for a research topic, or ([], answer) when the input is not something to research."""
         logger.info(f"PlannerAgent: planning research for '{topic}'")
         reply = await _tz_call(
             self.config,
@@ -277,11 +307,19 @@ class PlannerAgent:
             f'- "paper": academic papers (arXiv, Semantic Scholar) for scientific or technical research; '
             f"write these queries as 2-5 keywords\n"
             f'- "community": practitioner discussion on Hacker News, for opinions, developer experience and tools\n'
-            f'Reply with JSON only: {{"sub_questions": [{{"question": "...", "queries": ["..."], "kinds": ["web"]}}]}}',
+            f'Reply with JSON only: {{"sub_questions": [{{"question": "...", "queries": ["..."], "kinds": ["web"]}}]}}\n\n'
+            f"Exception: if the input is clearly not something to research - small talk, a question about you, or a "
+            f"trivial fact or calculation - do not plan; reply with JSON only: "
+            f'{{"intent": "chat", "reply": "<a short, friendly answer>"}}. A short subject such as "quantum computing" '
+            f"IS a research topic. About you, if asked: {ABOUT_ME}",
         )
+        parsed = parse_json_object(reply)
+        if parsed.get("intent") == "chat" and isinstance(parsed.get("reply"), str) and parsed["reply"].strip():
+            logger.info("PlannerAgent: not a research topic, answering directly")
+            return [], parsed["reply"].strip()[:2000]
         plan = parse_plan(reply, topic, self.config.max_subquestions, self.config.queries_per_subquestion)
         logger.info(f"PlannerAgent: {[(sq['question'], sq['kinds']) for sq in plan]}")
-        return plan
+        return plan, ""
 
 
 class ExtractAgent:
@@ -461,8 +499,8 @@ class OrchestratorAgent:
 
     @traceable(run_type="chain", name="orchestrator:plan")
     async def plan_node(self, state: ResearchState) -> dict:
-        plan = await self.planner.run(state["topic"], state.get("session_history", []))
-        return {"sub_questions": plan, "round_subq_ids": [sq["id"] for sq in plan]}
+        plan, direct_reply = await self.planner.run(state["topic"], state.get("session_history", []))
+        return {"sub_questions": plan, "round_subq_ids": [sq["id"] for sq in plan], "direct_reply": direct_reply}
 
     def _search_sends(self, state: ResearchState, web_limit: int) -> list[Send] | str:
         round_no = state["search_rounds"] + 1
@@ -473,6 +511,8 @@ class OrchestratorAgent:
         return sends or "merge"
 
     def route_after_plan(self, state: ResearchState) -> list[Send] | str:
+        if state.get("direct_reply"):
+            return END
         return self._search_sends(state, self.config.search_max_queries)
 
     @traceable(run_type="chain", name="orchestrator:search_branch")
@@ -600,7 +640,7 @@ def build_graph(config: Config, redis: aioredis.Redis):
     workflow.add_node("verify", orchestrator.verify_node)
 
     workflow.add_edge(START, "plan")
-    workflow.add_conditional_edges("plan", orchestrator.route_after_plan, ["search_branch", "merge"])
+    workflow.add_conditional_edges("plan", orchestrator.route_after_plan, ["search_branch", "merge", END])
     workflow.add_edge("search_branch", "merge")
     workflow.add_conditional_edges("merge", orchestrator.route_after_merge, ["extract_branch", "summarize", "collect"])
     workflow.add_edge("extract_branch", "collect")
