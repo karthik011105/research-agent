@@ -237,8 +237,9 @@ Already visible in the tests: verified-only writes help only when the critic cau
   - At most 5 topics, at least every 6 hours apart. `/monitors` endpoints and a UI section.
 
 ## Step 7: Publish (1–2 sessions)
-- [ ] README with an architecture diagram and the benchmark, critic, learning and security results.
-- [ ] Write-up: *"Where do multi-agent research systems break? Benchmarking accuracy, learned critic debate, and attack propagation."*
+- [x] README rewritten with pipeline, architecture and defense-in-depth diagrams (2026-11-13). The results tables are placeholders until the live run.
+- [ ] Fill in the README and write-up results from the live run.
+- [x] Write-up drafted: `docs/WRITEUP.md`. The method is complete and the results are pending.
 - [ ] A 2-minute demo video and a stable URL (free DuckDNS).
 
 ---
