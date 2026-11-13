@@ -42,14 +42,23 @@
 - [x] CPU-only PyTorch in the app image: drops about 3 GB of unused CUDA libraries, so builds, deploys and ECR storage are smaller.
 
 **Done when:** the next deploy builds with the pinned gateway and the slimmer image, and a live job succeeds.
+✅ **Done 2026-11-13** (`981d16d`): the app image is 628 MB compressed, and a live job succeeded.
 
 ## Step 1: Foundation fixes (1 session)
-- [ ] Semantic cache: stop scanning every key per lookup (vector index or bounded candidate set).
-- [ ] Load the embedding model once and share it (`cache.py` and `memory.py` each load it today).
-- [ ] Red-team scoring honesty: a crash (`ERROR`) or a short reply must not count as "blocked". Record `blocked / passed / error` separately.
-- [ ] Configurable blocklist of low-quality source domains (e.g. prediction markets).
+- [x] Semantic cache: stop scanning every key per lookup. It now uses one Redis hash index plus a matrix product, sha256 keys and a bounded size.
+- [x] Load the embedding model once and share it (`app/embeddings.py`, run off the event loop).
+- [x] Related-memory lookup takes the most similar report, not the most recent (the root cause of the AI-chips leak).
+- [x] Red-team scoring honesty: the runner never sent the API key, so every attack counted as "blocked" on a 401. Outcomes are now blocked / refused / complied / error, and the dashboard's XSS is fixed.
+- [x] Configurable blocklist of low-quality source domains (`BLOCKED_DOMAINS`, prediction markets by default).
+- [x] Static import check in CI. A removed name crashed the app at startup, and the slim CI dependencies hid it.
 
 **Done when:** tests cover each fix, and red-team numbers distinguish blocked from errors.
+✅ **Done 2026-11-13**:
+- 170 tests pass.
+- Live checks:
+  - all 4 source types used
+  - the new cache answers in 3 s
+  - red team: 4/4 jailbreaks blocked by the input guardrail, 0 errors
 
 ## Step 2: Benchmark ⭐ (2–3 sessions). The measuring tool for every later step
 - [ ] `bench/topics.yaml` holds 25 fixed topics:
