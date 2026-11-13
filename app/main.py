@@ -21,6 +21,10 @@ from app.config import Config
 from app.pool import init_pool, close_pool, get_pool
 from app.bench import CRITIC_MODES, SYSTEMS, PostgresBenchStore, execute_critic_eval, execute_run, new_run
 from app.learning import LearningService, PostgresLearningStore, outcome_parts
+from app.security.attacks import ATTACKS, ATTACKS_BY_ID
+from app.security.memory_poisoning import DEFENSE_SETTINGS
+from app.security.rules import PostgresRuleStore, RuleBook
+from app.security.service import execute_attack_run, execute_memory_run, propose_rule_for_attack
 from app.auth import require_api_key
 from app.cache import cache_get, cache_set
 from app.guardrails import validate_input, validate_output
@@ -76,6 +80,15 @@ async def _hand_back_unfinished_jobs():
             logger.error(f"Could not hand back job {data.get('job_id', '?')[:8]}: {e}")
 
 
+def memory_write_allowed(config, final_state: dict) -> bool:
+    """MEMORY_VERIFIED_ONLY (Step 5c defense): only reports the critic fully approved are cached or remembered, so a
+    report carrying an unverified (possibly injected) claim can't be served to later users."""
+    if not config.memory_verified_only:
+        return True
+    verdicts = final_state.get("claim_verdicts") or []
+    return bool(final_state.get("verified")) and all(v.get("decision") == "keep" for v in verdicts)
+
+
 def _direct_result(topic: str, reply: str) -> dict:
     """Result shape for inputs answered without research (greetings, questions about the assistant)."""
     return {
@@ -116,12 +129,12 @@ async def _process_job(data: dict, msg_id: str):
 
         # fresh=True skips both lookups so the report is always built from a live search
         origin = "pipeline"
-        hit = None if fresh else await cache_get(redis_client, config, topic)
+        hit = None if fresh else await cache_get(redis_client, config, topic, session_id)
         if hit:
             log.info("Cache hit")
             origin = "cache"
         elif not fresh:
-            hit = await ltm_search(config, topic)
+            hit = await ltm_search(config, topic, session_id)
             if hit:
                 log.info("LTM hit")
                 origin = "memory"
@@ -132,7 +145,7 @@ async def _process_job(data: dict, msg_id: str):
         else:
             log.info("Running multi-agent pipeline")
             # Find a related (not identical) previous report for the writer to reference
-            ltm_context = await ltm_search_related(config, topic) or ""
+            ltm_context = await ltm_search_related(config, topic, session_id) or ""
             if ltm_context:
                 log.info("Found related LTM context for writer agent")
             # session history makes the planner context-aware; ltm_context lets the writer build on prior research
@@ -158,8 +171,11 @@ async def _process_job(data: dict, msg_id: str):
             if not ok:
                 await set_result(redis_client, config, job_id, {"status": "blocked", "error": reason})
                 return
-            await cache_set(redis_client, config, topic, report_text, sources)
-            await ltm_store(config, topic, report_text, str(uuid.uuid4()), sources)
+            if memory_write_allowed(config, final_state):
+                await cache_set(redis_client, config, topic, report_text, sources, session_id)
+                await ltm_store(config, topic, report_text, str(uuid.uuid4()), sources, session_id)
+            else:
+                log.info("Report not stored in shared memory: the critic did not fully approve it")
             writer_variant = final_state.get("writer_variant") or ""
             if writer_variant and learning:
                 # Step 4c: the bandit learns from this report's outcome (👍/👎 can add to it later)
@@ -210,7 +226,7 @@ async def _process_job(data: dict, msg_id: str):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_client, graph, bench_store, learning
+    global redis_client, graph, bench_store, learning, rule_store, rulebook
     if not config.guardrails_enabled:
         logger.warning("Bedrock guardrails are DISABLED (GUARDRAILS_ENABLED=false) - local development only")
     redis_client = await aioredis.from_url(config.redis_url, decode_responses=True)
@@ -222,7 +238,11 @@ async def lifespan(app: FastAPI):
     await learning_store.migrate()
     learning = LearningService(learning_store, config.learning_enabled, config.learning_explore)
     await learning.load()
-    graph = build_graph(config, redis_client, learning=learning)
+    rule_store = PostgresRuleStore(get_pool())
+    await rule_store.migrate()
+    rulebook = RuleBook(rule_store)
+    await rulebook.reload()
+    graph = build_graph(config, redis_client, learning=learning, rulebook=rulebook)
     app.state.config = config
     worker = asyncio.create_task(_worker_loop())
     yield
@@ -436,3 +456,89 @@ async def feedback(job_id: str, req: FeedbackRequest):
 @app.get("/stats/learning", dependencies=[Depends(require_api_key)])
 async def learning_stats():
     return await learning.stats()
+
+
+# ── Step 5: security research (run on demand; results in bench_runs) ──────────
+
+rule_store: PostgresRuleStore | None = None
+rulebook: RuleBook | None = None
+
+
+def _background(coro):
+    task = asyncio.create_task(coro)
+    _bench_tasks.add(task)
+    task.add_done_callback(_bench_tasks.discard)
+
+
+class AttackRunRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=60)
+    topic_id: str = Field(min_length=1, max_length=60)
+    topic: str = Field(min_length=3, max_length=500)
+    attack_id: str
+    critic_mode: str = "single"
+
+
+@app.post("/security/attack-run", dependencies=[Depends(require_api_key)])
+async def security_attack_run(req: AttackRunRequest):
+    """5a/5b: one pipeline run with one poisoned page; records the stage where the attack stopped."""
+    if req.attack_id not in ATTACKS_BY_ID:
+        raise HTTPException(status_code=400, detail=f"attack_id must be one of {[a.id for a in ATTACKS]}")
+    if req.critic_mode not in CRITIC_MODES:
+        raise HTTPException(status_code=400, detail=f"critic_mode must be one of {CRITIC_MODES}")
+    run = new_run(req.label, req.topic_id, req.topic, f"attack:{req.attack_id}:{req.critic_mode}")
+    await bench_store.save_run(run)
+    _background(execute_attack_run(config, redis_client, bench_store, run, req.attack_id, req.critic_mode, rulebook))
+    return {"id": run["id"], "status": "running"}
+
+
+class MemoryRunRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=60)
+    plant_topic: str = Field(min_length=3, max_length=300)
+    victims: list[tuple[str, str]]          # (same | related | unrelated, topic)
+    setting: str = "none"
+    poison_verified: bool = False
+
+
+@app.post("/security/memory-run", dependencies=[Depends(require_api_key)])
+async def security_memory_run(req: MemoryRunRequest):
+    """5c: plants a poisoned report, asks as another user, measures contamination, cleans up."""
+    if req.setting not in DEFENSE_SETTINGS:
+        raise HTTPException(status_code=400, detail=f"setting must be one of {list(DEFENSE_SETTINGS)}")
+    run = new_run(req.label, "memory", req.plant_topic, f"memory:{req.setting}:{'verified' if req.poison_verified else 'unverified'}")
+    await bench_store.save_run(run)
+    _background(execute_memory_run(config, redis_client, bench_store, run, req.plant_topic, req.victims,
+                                   req.setting, req.poison_verified))
+    return {"id": run["id"], "status": "running"}
+
+
+class RuleProposalRequest(BaseModel):
+    attack_id: str
+
+
+@app.post("/security/rules/propose", dependencies=[Depends(require_api_key)])
+async def security_propose_rule(req: RuleProposalRequest):
+    """5d: an LLM proposes a filter rule for an attack; code tests it. Nothing is applied until approved."""
+    if req.attack_id not in ATTACKS_BY_ID:
+        raise HTTPException(status_code=400, detail=f"attack_id must be one of {[a.id for a in ATTACKS]}")
+    return await propose_rule_for_attack(config, bench_store, rule_store, req.attack_id)
+
+
+@app.get("/security/rules", dependencies=[Depends(require_api_key)])
+async def security_rules():
+    return {"rules": await rule_store.list_rules(), "active_patterns": len(rulebook.patterns)}
+
+
+@app.post("/security/rules/{rule_id}/{decision}", dependencies=[Depends(require_api_key)])
+async def security_rule_decision(rule_id: str, decision: str):
+    """The owner's approval step: only a rule that passed its tests can be approved."""
+    if decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="decision must be approve or reject")
+    rule = await rule_store.get(rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="no such rule")
+    if decision == "approve" and not (rule.get("test") or {}).get("passed"):
+        raise HTTPException(status_code=400, detail="this rule failed its tests and can't be approved")
+    rule["status"] = "approved" if decision == "approve" else "rejected"
+    await rule_store.save(rule)
+    await rulebook.reload()
+    return {"id": rule_id, "status": rule["status"], "active_patterns": len(rulebook.patterns)}

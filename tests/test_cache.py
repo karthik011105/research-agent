@@ -31,6 +31,7 @@ def ccfg(config):
     config.cache_ttl = 3600
     config.cache_similarity_threshold = 0.85
     config.cache_max_entries = 1000
+    config.memory_scope = "global"
     return config
 
 
@@ -93,3 +94,20 @@ async def test_corrupt_index_entry_is_ignored(redis, ccfg):
     await cache_set(redis, ccfg, "ai chips", "chips report", [])
     assert (await cache_get(redis, ccfg, "ai chips"))["report"] == "chips report"
     assert await redis.hget("semantic:index", "semantic:junk") is None
+
+
+async def test_session_scope_hides_other_sessions_reports(redis, ccfg):
+    ccfg.memory_scope = "session"
+    await cache_set(redis, ccfg, "ai chips", "attacker's poisoned report", [], session_id="attacker")
+    assert await cache_get(redis, ccfg, "AI chips this month", session_id="victim") is None
+    assert (await cache_get(redis, ccfg, "AI chips this month", session_id="attacker"))["report"] == "attacker's poisoned report"
+    ccfg.memory_scope = "global"                               # default: shared by everyone (old behaviour)
+    await cache_set(redis, ccfg, "quantum", "shared", [], session_id="someone")
+    assert (await cache_get(redis, ccfg, "quantum", session_id="anyone"))["report"] == "shared"
+
+
+async def test_size_cap_counts_every_sessions_entries(redis, ccfg):
+    ccfg.memory_scope, ccfg.cache_max_entries = "session", 2
+    for i, topic in enumerate(("ai chips", "ai regulation", "quantum")):
+        await cache_set(redis, ccfg, topic, topic, [], session_id=f"s{i}")
+    assert await redis.hlen("semantic:index") == 2

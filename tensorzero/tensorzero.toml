@@ -232,3 +232,15 @@ weight = 1.0
 temperature = 0.0
 max_tokens = 900
 system_template = "templates/critic_skeptic_system.minijinja"
+
+# Step 5d: proposes self-healing filter rules (tested by code and approved by the owner before use)
+[functions.security_rule]
+type = "chat"
+
+[functions.security_rule.variants.primary]
+type = "chat_completion"
+model = "research_model"
+weight = 1.0
+temperature = 0.2
+max_tokens = 800
+system_template = "templates/security_rule_system.minijinja"

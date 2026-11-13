@@ -201,6 +201,25 @@ All three parts are **learning-based**. No model weights change; the system lear
 
 **Done when:** there is a propagation matrix, contamination numbers before and after the defenses, and one full self-healing cycle demonstrated.
 
+**Status (2026-11-13): built, not yet run live.** Modules in `app/security/`:
+- `attacks.py`: 5 attack kinds × 3 phrasings, each carrying a unique canary.
+- `propagation.py`: stage tracing through LangGraph `astream`.
+- `memory_poisoning.py`: plant a poisoned report, query as another user, then clean up.
+- `rules.py`: rules are proposed by an LLM and then tested by code: at least 80% recall on held-out phrasings, at most 2% false positives on real saved pages, and no catastrophic regexes. Only owner-approved rules are applied, and they remove matching sentences from pages before any LLM reads them.
+
+Endpoints:
+- `/security/attack-run`
+- `/security/memory-run`
+- `/security/rules/propose`
+- `/security/rules`
+- `/security/rules/{id}/approve|reject`
+
+New defenses, off until measured:
+- `MEMORY_SCOPE=session`
+- `MEMORY_VERIFIED_ONLY=true`
+
+Already visible in the tests: verified-only writes help only when the critic caught the poison, while session scope blocks cross-user reuse either way.
+
 ## Step 6: Realtime UX (1–2 sessions)
 - [ ] **SSE progress stream**: plan → searches per sub-question → sources read → writing → critic panel (debates as they happen), plus a 🛡 event whenever a defense fires.
 - [ ] **Topic monitoring**: a saved topic is re-researched on a schedule (EventBridge), with a "what changed" diff.

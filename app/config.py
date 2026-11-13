@@ -62,6 +62,11 @@ class Config:
         # Reports older than this are re-researched with live search instead of reused
         self.ltm_fresh_hours: int = int(data.get("LTM_FRESH_HOURS", 24))
         self.ltm_threshold: float = float(data.get("LTM_THRESHOLD", 0.88))
+        # Step 5c memory-poisoning defenses (measured before being turned on):
+        #   MEMORY_SCOPE=session   reuse cached/remembered reports only within the session that produced them
+        #   MEMORY_VERIFIED_ONLY   store a report only if the critic approved it (no open fix/remove items)
+        self.memory_scope: str = data.get("MEMORY_SCOPE", "global").strip().lower()
+        self.memory_verified_only: bool = data.get("MEMORY_VERIFIED_ONLY", "false").strip().lower() == "true"
         # Minimum similarity for a past report to be offered to the writer as background on a related topic
         self.ltm_related_min: float = float(data.get("LTM_RELATED_MIN", 0.65))
         self.ltm_diff_threshold: float = float(data.get("LTM_DIFF_THRESHOLD", 0.7))

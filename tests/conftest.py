@@ -36,6 +36,8 @@ def config():
         blocked_domains=["polymarket.com", "kalshi.com"],
         critic_mode="single",
         critic_debate_rounds=2,
+        memory_scope="global",
+        memory_verified_only=False,
     )
 
 

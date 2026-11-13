@@ -79,6 +79,12 @@ class PostgresBenchStore:
             rows = await conn.fetch("SELECT results FROM bench_snapshots WHERE topic_id=$1 ORDER BY created_at", topic_id)
         return [s for r in rows for s in json.loads(r["results"])]
 
+    async def all_evidence(self, limit: int = 300) -> list[dict]:
+        """Saved search results across all topics (real, harmless web pages for testing filter rules)."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT results FROM bench_snapshots ORDER BY created_at DESC LIMIT $1", limit)
+        return [s for r in rows for s in json.loads(r["results"])]
+
     async def save_run(self, run):
         async with self.pool.acquire() as conn:
             await conn.execute("""

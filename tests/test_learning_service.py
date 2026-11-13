@@ -110,3 +110,21 @@ async def test_benchmark_runs_never_use_the_bandit(config, redis, monkeypatch, s
     finally:
         metering._counters.set(None)
     assert out["writer_variant"] == "" and rec.variants == [None]
+
+
+def test_memory_write_policy():
+    from types import SimpleNamespace
+    # main.py builds the app at import time; the policy is a pure function, so test it in isolation
+    src = open("app/main.py", encoding="utf-8").read()
+    start = src.index("def memory_write_allowed(")
+    end = src.index("\n\n\n", start)
+    ns = {}
+    exec(src[start:end], ns)
+    allowed = ns["memory_write_allowed"]
+    off, on = SimpleNamespace(memory_verified_only=False), SimpleNamespace(memory_verified_only=True)
+    unverified = {"verified": False, "claim_verdicts": [{"decision": "fix"}]}
+    assert allowed(off, unverified)                                       # default: store everything
+    assert not allowed(on, unverified)
+    assert not allowed(on, {"verified": True, "claim_verdicts": [{"decision": "keep"}, {"decision": "remove"}]})
+    assert allowed(on, {"verified": True, "claim_verdicts": [{"decision": "keep"}]})
+    assert allowed(on, {"verified": True, "claim_verdicts": []})        # single critic said YES

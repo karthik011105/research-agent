@@ -520,13 +520,15 @@ class OrchestratorAgent:
     goes back to the writer with the critic's feedback (up to agent_max_iterations drafts) - no extra searches.
     """
 
-    def __init__(self, config: Config, redis: aioredis.Redis, search_fn=None, learning=None):
+    def __init__(self, config: Config, redis: aioredis.Redis, search_fn=None, learning=None, rulebook=None):
         self.config = config
         self.redis = redis
         # The benchmark injects a snapshot-replaying search; normal jobs use live search_kind
         self.search_fn = search_fn
         # Step 4 LearningService (None in tests and benchmark runs: everything stays rule-based)
         self.learning = learning
+        # Step 5d approved self-healing rules: matching sentences are removed from web pages before any LLM reads them
+        self.rulebook = rulebook
         self.planner = PlannerAgent(config)
         self.extract_agent = ExtractAgent(config)
         self.gap_agent = GapCheckAgent(config)
@@ -582,6 +584,9 @@ class OrchestratorAgent:
         # Scrape only what can still make the cut, plus a few spares for pages that fail to scrape
         room = max(0, self.config.search_max_sources - len(existing))
         window = await enrich_sources(self.redis, self.config, candidates[:room + self.config.scrape_max_pages])
+        if self.rulebook is not None and self.rulebook.patterns:
+            from app.security.rules import sanitize_sources
+            window = sanitize_sources(window, self.rulebook.patterns)
         # A GDELT entry is only a headline until its article is scraped - not worth citing on its own
         window = [s for s in window if s["provider"] != "gdelt" or s.get("scraped")]
         sources = merge_sources([window], existing, self.config)
@@ -682,8 +687,8 @@ class OrchestratorAgent:
         return END
 
 
-def build_graph(config: Config, redis: aioredis.Redis, search_fn=None, learning=None):
-    orchestrator = OrchestratorAgent(config, redis, search_fn, learning)
+def build_graph(config: Config, redis: aioredis.Redis, search_fn=None, learning=None, rulebook=None):
+    orchestrator = OrchestratorAgent(config, redis, search_fn, learning, rulebook)
     workflow = StateGraph(ResearchState)
 
     workflow.add_node("plan", orchestrator.plan_node)

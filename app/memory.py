@@ -34,6 +34,8 @@ async def db_migrate(config: Config) -> None:
             )
         """)
         await conn.execute("ALTER TABLE reports ADD COLUMN IF NOT EXISTS sources JSONB NOT NULL DEFAULT '[]'::jsonb")
+        # owner = session that produced the report; '' = shared (MEMORY_SCOPE=global, and all older rows)
+        await conn.execute("ALTER TABLE reports ADD COLUMN IF NOT EXISTS owner TEXT NOT NULL DEFAULT ''")
         await conn.execute(f"""
             CREATE INDEX IF NOT EXISTS reports_embedding_idx
             ON reports USING ivfflat (embedding vector_cosine_ops)
@@ -43,21 +45,26 @@ async def db_migrate(config: Config) -> None:
         await conn.execute("CREATE INDEX IF NOT EXISTS reports_created_idx ON reports (created_at DESC)")
 
 
-async def ltm_store(config: Config, topic: str, report: str, report_id: str, sources: list[dict]) -> None:
+def _owner(config: Config, session_id: str | None) -> str:
+    return (session_id or "") if config.memory_scope == "session" else ""
+
+
+async def ltm_store(config: Config, topic: str, report: str, report_id: str, sources: list[dict],
+                    session_id: str | None = None) -> None:
     embedding = await embed(topic)
     pool = get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO reports (id, topic, report, embedding, created_at, sources)
-            VALUES ($1, $2, $3, $4::vector, $5, $6::jsonb)
+            INSERT INTO reports (id, topic, report, embedding, created_at, sources, owner)
+            VALUES ($1, $2, $3, $4::vector, $5, $6::jsonb, $7)
             ON CONFLICT (id) DO NOTHING
             """,
-            report_id, topic, report, str(embedding), datetime.utcnow(), json.dumps(sources),
+            report_id, topic, report, str(embedding), datetime.utcnow(), json.dumps(sources), _owner(config, session_id),
         )
 
 
-async def ltm_search(config: Config, topic: str) -> dict | None:
+async def ltm_search(config: Config, topic: str, session_id: str | None = None) -> dict | None:
     embedding = await embed(topic)
     pool = get_pool()
     async with pool.acquire() as conn:
@@ -68,9 +75,10 @@ async def ltm_search(config: Config, topic: str) -> dict | None:
             FROM reports
             WHERE created_at > NOW() - ($2 || ' hours')::INTERVAL
               AND 1 - (embedding <=> $1::vector) > $3
+              AND owner = $4
             ORDER BY similarity DESC LIMIT 1
             """,
-            str(embedding), str(config.ltm_fresh_hours), config.ltm_threshold,
+            str(embedding), str(config.ltm_fresh_hours), config.ltm_threshold, _owner(config, session_id),
         )
         if not row:
             return None
@@ -79,7 +87,7 @@ async def ltm_search(config: Config, topic: str) -> dict | None:
         return hit
 
 
-async def ltm_search_related(config: Config, topic: str) -> str | None:
+async def ltm_search_related(config: Config, topic: str, session_id: str | None = None) -> str | None:
     """
     Finds a related (but not identical) previous report to use as background for the writer: the MOST SIMILAR
     report between ltm_related_min and just below the exact-match threshold. (It used to take the most recent
@@ -92,9 +100,10 @@ async def ltm_search_related(config: Config, topic: str) -> str | None:
             """
             SELECT report, 1 - (embedding <=> $1::vector) AS similarity FROM reports
             WHERE 1 - (embedding <=> $1::vector) BETWEEN $3 AND $2
+              AND owner = $4
             ORDER BY similarity DESC, created_at DESC LIMIT 1
             """,
-            str(embedding), config.ltm_threshold - 0.01, config.ltm_related_min,
+            str(embedding), config.ltm_threshold - 0.01, config.ltm_related_min, _owner(config, session_id),
         )
         return row["report"] if row else None
 
@@ -117,3 +126,10 @@ async def ltm_diff(config: Config, topic: str) -> str | None:
             lineterm="",
         ))
         return "\n".join(diff_lines[:config.ltm_diff_limit * 10]) or "No significant changes detected."
+
+
+async def ltm_delete(report_id: str) -> None:
+    """Removes one stored report (used by the Step 5c experiment to clean up what it planted)."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM reports WHERE id = $1", report_id)
