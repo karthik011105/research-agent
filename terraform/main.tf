@@ -443,7 +443,10 @@ resource "aws_bedrock_guardrail" "main" {
     filters_config {
       type            = "MISCONDUCT"
       input_strength  = "HIGH"
-      output_strength = "HIGH"
+      # MEDIUM on output: HIGH also blocked LOW-confidence matches, i.e. any report that explains how an attack
+      # works in order to defend against it (e.g. "defending LLMs against jailbreaks"). Medium/high-confidence
+      # misconduct is still blocked, and user input is still filtered at HIGH.
+      output_strength = "MEDIUM"
     }
     filters_config {
       type            = "PROMPT_ATTACK"
@@ -505,7 +508,14 @@ resource "aws_bedrock_guardrail" "main" {
 
 resource "aws_bedrock_guardrail_version" "main" {
   guardrail_arn = aws_bedrock_guardrail.main.guardrail_arn
-  description   = "v1 — deployed by Terraform"
+  description   = "Published by Terraform"
+  # Keep older versions: tasks still running during a deploy keep using theirs until they are replaced
+  skip_destroy = true
+
+  lifecycle {
+    # A published version is a frozen snapshot; any policy change needs a new one
+    replace_triggered_by = [aws_bedrock_guardrail.main]
+  }
 }
 
 # ─── ElastiCache Redis ────────────────────────────────────────────────────────
@@ -834,8 +844,9 @@ resource "aws_ecs_task_definition" "app" {
       portMappings = [{ containerPort = 8000, protocol = "tcp" }]
       environment = [
         { name = "AWS_REGION", value = var.aws_region },
-        # Overrides REDIS_URL in the secret, which Terraform no longer rewrites (see secret version lifecycle)
-        { name = "REDIS_URL", value = local.redis_url }
+        # Override values in the secret, which Terraform no longer rewrites (see secret version lifecycle)
+        { name = "REDIS_URL", value = local.redis_url },
+        { name = "BEDROCK_GUARDRAIL_VERSION", value = aws_bedrock_guardrail_version.main.version }
       ]
       dependsOn    = [{ containerName = "tensorzero", condition = "START" }]
       logConfiguration = {

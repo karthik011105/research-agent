@@ -23,7 +23,7 @@ from app.cache import cache_get, cache_set
 from app.guardrails import validate_input, validate_output
 from app.memory import session_add, session_get, ltm_search, ltm_search_related, ltm_store, ltm_diff, db_migrate
 from app.queue import push_job, get_result, set_result, ensure_group, consume_jobs, ack_job
-from app.agents import build_graph, initial_state
+from app.agents import build_graph, initial_state, rewrite_for_safety
 from app.output import generate_pdf, generate_json_report, get_report_diff
 from app.eval import evaluate_report, run_batch_evaluation, fetch_recent_topics
 
@@ -95,7 +95,11 @@ async def _process_job(data: dict, msg_id: str):
             search_rounds = final_state["search_rounds"]
             sub_questions = [sq["question"] for sq in final_state["sub_questions"]] if live_sources else []
             scraped_count = final_state["scraped_count"]
-            ok, reason = await validate_output(config, report_text)
+            ok, reason, policies = await validate_output(config, report_text)
+            if not ok:
+                log.info(f"Output guardrail blocked the report ({policies}) - asking the writer for a safer draft")
+                report_text = await rewrite_for_safety(config, final_state, policies)
+                ok, reason, policies = await validate_output(config, report_text)
             if not ok:
                 await set_result(redis_client, config, job_id, {"status": "blocked", "error": reason})
                 return

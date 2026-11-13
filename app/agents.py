@@ -373,6 +373,21 @@ class WriterAgent:
         )
 
 
+async def rewrite_for_safety(config: Config, state: dict, policies: list[str]) -> str:
+    """One more draft after the output guardrail blocked the report: same findings, attacks and risks kept at
+    a descriptive level. Used so a legitimate topic (e.g. defending against attacks) isn't lost after minutes
+    of research because one passage read like instructions."""
+    feedback = (
+        f"An automated safety filter blocked the previous draft ({', '.join(policies) or 'policy match'}). "
+        "Rewrite it for a general professional audience: focus on findings, defenses, impact and recommendations; "
+        "describe attacks, exploits or misuse only at a high level (what they are and why they matter), with no "
+        "step-by-step instructions, payloads, or operational detail."
+    )
+    report = await WriterAgent(config).run(state["topic"], state["facts"], state["live_sources"],
+                                          state.get("ltm_context", ""), feedback)
+    return report + (sources_section(report, state["sources"]) if state["live_sources"] else "")
+
+
 class CriticAgent:
     """Checks the report's claims against the cited sources (or for basic coherence when there are none)."""
 

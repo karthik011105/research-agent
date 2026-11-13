@@ -22,7 +22,8 @@ class Config:
 
         # Bedrock Guardrails
         self.bedrock_guardrail_id: str = data["BEDROCK_GUARDRAIL_ID"]
-        self.bedrock_guardrail_version: str = data["BEDROCK_GUARDRAIL_VERSION"]
+        # Task env wins: Terraform publishes a new version whenever the guardrail policy changes
+        self.bedrock_guardrail_version: str = os.environ.get("BEDROCK_GUARDRAIL_VERSION") or data["BEDROCK_GUARDRAIL_VERSION"]
 
         # Storage
         # Task env wins: Terraform sets it per deploy, while the secret's copy can go stale across pause/resume
