@@ -77,7 +77,7 @@ class Config:
         # Terraform after creation — add a key to research-agent/config only to override one.
         self.enabled_providers: list[str] = [
             p.strip() for p in data.get(
-                "ENABLED_PROVIDERS", "tavily,brave,arxiv,semantic_scholar,gdelt,hackernews").split(",") if p.strip()
+                "ENABLED_PROVIDERS", "tavily,brave,openalex,arxiv,semantic_scholar,gdelt,hackernews").split(",") if p.strip()
         ]
         self.semantic_scholar_api_key: str = data.get("SEMANTIC_SCHOLAR_API_KEY", "")
         self.max_subquestions: int = int(data.get("MAX_SUBQUESTIONS", 3))

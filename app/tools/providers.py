@@ -14,6 +14,7 @@ import httpx
 
 ARXIV_URL = "https://export.arxiv.org/api/query"
 SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+OPENALEX_URL = "https://api.openalex.org/works"
 GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 HN_SEARCH_URL = "https://hn.algolia.com/api/v1/search"
 HN_ITEM_URL = "https://hn.algolia.com/api/v1/items/{id}"
@@ -28,9 +29,10 @@ _STOPWORDS = {
 }
 _TAG = re.compile(r"<[^>]+>")
 
-# The providers publish request-rate rules (arXiv: one call per 3 s, GDELT: one per 5 s). One app task
-# serves all jobs, so a per-process gap between calls is enough to respect them.
-_MIN_INTERVAL = {"arxiv": 3.0, "gdelt": 5.0}
+# The providers publish request-rate rules (arXiv: one call per 3 s, GDELT: one per 5 s, keyless Semantic
+# Scholar: about one per second). One app task serves all jobs, so a per-process gap between calls is enough.
+# search._free_search calls throttle() before each request, then checks the provider's cooldown.
+_MIN_INTERVAL = {"arxiv": 3.0, "gdelt": 5.0, "semantic_scholar": 1.1}
 _last_call: dict[str, float] = {}
 _locks: dict[str, asyncio.Lock] = {}
 
@@ -92,7 +94,6 @@ def parse_arxiv(xml_text: str) -> list[dict]:
 
 
 async def fetch_arxiv(query: str, max_results: int) -> list[dict]:
-    await throttle("arxiv")
     async with httpx.AsyncClient(timeout=30, headers=HEADERS) as client:
         r = await client.get(ARXIV_URL, params={
             "search_query": arxiv_query(query),
@@ -134,6 +135,48 @@ async def fetch_semantic_scholar(query: str, max_results: int, api_key: str = ""
         return parse_semantic_scholar(r.json())
 
 
+# ── OpenAlex (open scholarly index: 250M+ works, keyless, generous limits) ──
+
+def openalex_abstract(inverted: dict | None) -> str:
+    """OpenAlex ships abstracts as {word: [positions]} for licensing reasons; rebuild the text."""
+    if not inverted:
+        return ""
+    positions = {pos: word for word, places in inverted.items() for pos in places}
+    return " ".join(positions[i] for i in sorted(positions))
+
+
+def parse_openalex(payload: dict) -> list[dict]:
+    results, seen_titles = [], set()
+    for w in payload.get("results") or []:
+        title = _clean(w.get("title") or w.get("display_name"))
+        abstract = openalex_abstract(w.get("abstract_inverted_index"))
+        url = (w.get("primary_location") or {}).get("landing_page_url") or w.get("doi") or w.get("id") or ""
+        key = title.lower()
+        if not url or not abstract or key in seen_titles:
+            continue  # OpenAlex often lists several versions (preprint, published) of one paper
+        seen_titles.add(key)
+        meta = [m for m in (str(w.get("publication_year") or ""),
+                            ((w.get("primary_location") or {}).get("source") or {}).get("display_name") or "") if m]
+        if w.get("cited_by_count") is not None:
+            meta.append(f"{w['cited_by_count']} citations")
+        content = (f"{'; '.join(meta)}. " if meta else "") + f"Abstract: {abstract}"
+        results.append(make_source(title, url, content, w.get("publication_date") or "", "openalex", "paper"))
+    return results
+
+
+async def fetch_openalex(query: str, max_results: int) -> list[dict]:
+    async with httpx.AsyncClient(timeout=30, headers=HEADERS) as client:
+        r = await client.get(OPENALEX_URL, params={
+            "search": " ".join(keyword_terms(query, 6)) or query,
+            "filter": "has_abstract:true",
+            "per-page": max_results,
+            "select": "id,doi,title,display_name,publication_date,publication_year,abstract_inverted_index,"
+                      "cited_by_count,primary_location",
+        })
+        r.raise_for_status()
+        return parse_openalex(r.json())
+
+
 # ── GDELT (global news) ──────────────────────────────────────────────────────
 
 def _gdelt_date(seen: str) -> str:
@@ -153,7 +196,6 @@ def parse_gdelt(payload: dict) -> list[dict]:
 
 
 async def fetch_gdelt(query: str, max_results: int) -> list[dict]:
-    await throttle("gdelt")
     terms = keyword_terms(query, 5)
     async with httpx.AsyncClient(timeout=30, headers=HEADERS) as client:
         r = await client.get(GDELT_URL, params={

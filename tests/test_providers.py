@@ -1,9 +1,11 @@
+import asyncio
 import httpx
 import pytest
 import respx
 from app.tools import providers, search
 from app.tools.providers import (
-    arxiv_query, keyword_terms, parse_arxiv, parse_gdelt, parse_hn, parse_semantic_scholar, top_comments,
+    arxiv_query, keyword_terms, openalex_abstract, parse_arxiv, parse_gdelt, parse_hn, parse_openalex,
+    parse_semantic_scholar, top_comments,
 )
 from app.tools.search import SearchUnavailable, dedupe_new, interleave, search_kind
 from tests.conftest import make_source
@@ -25,6 +27,16 @@ S2_OK = {"data": [
     {"paperId": "abc", "title": "Guarding LLMs", "abstract": "A <i>survey</i> of guardrails.", "url": None,
      "year": 2026, "venue": "ACL", "citationCount": 12, "publicationDate": "2026-05-01"},
     {"paperId": "def", "title": "No abstract", "abstract": None, "url": "https://s2.org/def"},
+]}
+
+OPENALEX_OK = {"results": [
+    {"id": "https://openalex.org/W1", "doi": "https://doi.org/10.1/x", "title": "OnionGuard: Layered Guardrails",
+     "publication_date": "2026-02-05", "publication_year": 2026, "cited_by_count": 4,
+     "abstract_inverted_index": {"We": [0], "propose": [1], "layered": [2], "guardrails.": [3]},
+     "primary_location": {"landing_page_url": "https://zenodo.org/1", "source": {"display_name": "Zenodo"}}},
+    {"id": "https://openalex.org/W2", "title": "OnionGuard: Layered Guardrails",      # second version of the same paper
+     "abstract_inverted_index": {"Again": [0]}, "primary_location": {"landing_page_url": "https://zenodo.org/2"}},
+    {"id": "https://openalex.org/W3", "title": "No abstract", "abstract_inverted_index": None},
 ]}
 
 GDELT_OK = {"articles": [
@@ -62,6 +74,18 @@ def test_parse_semantic_scholar_builds_url_and_skips_title_only():
     assert paper["kind"] == "paper"
 
 
+def test_openalex_abstract_rebuilds_inverted_index():
+    assert openalex_abstract({"b": [1, 3], "a": [0], "c": [2]}) == "a b c b"
+    assert openalex_abstract(None) == ""
+
+
+def test_parse_openalex_skips_duplicate_versions_and_missing_abstracts():
+    [paper] = parse_openalex(OPENALEX_OK)
+    assert paper["url"] == "https://zenodo.org/1"
+    assert paper["content"] == "2026; Zenodo; 4 citations. Abstract: We propose layered guardrails."
+    assert (paper["provider"], paper["kind"], paper["published_date"]) == ("openalex", "paper", "2026-02-05")
+
+
 def test_parse_gdelt_is_headline_only_news():
     [article] = parse_gdelt(GDELT_OK)
     assert article["published_date"] == "2026-11-10"
@@ -86,6 +110,14 @@ def test_interleave_and_dedupe_keep_every_list_represented():
     assert [s["url"] for s in dedupe_new([a, b], existing)] == ["https://example.com/1", "https://example.com/3"]
 
 
+def test_dedupe_matches_same_paper_under_different_urls():
+    arxiv = {**make_source(1, url="https://arxiv.org/abs/1"), "title": "Layered Guardrails for LLMs"}
+    doi = {**make_source(2, url="https://doi.org/10.1/x"), "title": "Layered guardrails for LLMs."}
+    short = [{**make_source(3), "title": "AI"}, {**make_source(4), "title": "AI"}]   # short titles: URL only
+    assert [s["url"] for s in dedupe_new([[arxiv], [doi], short], [])] == [
+        "https://arxiv.org/abs/1", "https://example.com/3", "https://example.com/4"]
+
+
 @pytest.fixture(autouse=True)
 def no_throttle(monkeypatch):
     async def instant(provider):
@@ -96,10 +128,11 @@ def no_throttle(monkeypatch):
 @respx.mock
 async def test_paper_search_uses_both_free_providers_without_spending_budget(config, redis):
     config.search_daily_limit = 0          # any paid call would raise
+    respx.get(providers.OPENALEX_URL).mock(return_value=httpx.Response(200, json=OPENALEX_OK))
     arxiv = respx.get(providers.ARXIV_URL).mock(return_value=httpx.Response(200, text=ARXIV_XML))
     respx.get(providers.SEMANTIC_SCHOLAR_URL).mock(return_value=httpx.Response(200, json=S2_OK))
     results = await search_kind(redis, config, "llm guardrails", "paper")
-    assert [r["provider"] for r in results] == ["arxiv", "semantic_scholar"]
+    assert [r["provider"] for r in results] == ["openalex", "arxiv", "semantic_scholar"]
     await search_kind(redis, config, "llm guardrails", "paper")   # second call comes from cache
     assert arxiv.call_count == 1
 
@@ -147,6 +180,25 @@ async def test_rate_limit_puts_provider_on_cooldown_for_all_queries(config, redi
         await search_kind(redis, config, "a different query", "paper")
     assert route.call_count == 1                       # second query never hit the API
     assert 0 < await redis.ttl("provider_cooldown:arxiv") <= 120
+
+
+@respx.mock
+async def test_calls_queued_behind_throttle_see_a_cooldown_set_meanwhile(config, redis, monkeypatch):
+    """Production case: six arXiv queries queued on the 3 s throttle, the first got 429, and the other five
+    still went out. With the cooldown checked after the throttle, only the first reaches the API."""
+    config.enabled_providers = ["arxiv"]
+    lock = asyncio.Lock()
+
+    async def serial_throttle(provider):          # one call at a time, like the real throttle
+        await lock.acquire()
+        asyncio.get_running_loop().call_later(0.01, lock.release)
+
+    monkeypatch.setattr(providers, "throttle", serial_throttle)
+    route = respx.get(providers.ARXIV_URL).mock(return_value=httpx.Response(429))
+    outcomes = await asyncio.gather(*(search_kind(redis, config, f"query {i}", "paper") for i in range(5)),
+                                    return_exceptions=True)
+    assert all(isinstance(o, SearchUnavailable) for o in outcomes)
+    assert route.call_count == 1
 
 
 @respx.mock

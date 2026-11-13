@@ -24,7 +24,7 @@ def config():
         critic_report_truncate=8000,
         agent_max_iterations=2,
         tensorzero_url="http://tensorzero.test",
-        enabled_providers=["tavily", "brave", "arxiv", "semantic_scholar", "gdelt", "hackernews"],
+        enabled_providers=["tavily", "brave", "openalex", "arxiv", "semantic_scholar", "gdelt", "hackernews"],
         semantic_scholar_api_key="",
         max_subquestions=3,
         queries_per_subquestion=2,

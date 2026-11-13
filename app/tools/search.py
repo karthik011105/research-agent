@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from datetime import date
 import httpx
 import redis.asyncio as aioredis
@@ -140,11 +141,18 @@ async def _free_search(redis: aioredis.Redis, config: Config, provider: str, que
     if cached:
         return json.loads(cached)
     cooldown_key = f"{_COOLDOWN_PREFIX}{provider}"
-    if await redis.exists(cooldown_key):
-        raise SearchUnavailable(f"{provider} is cooling down after a rate limit")
+
+    async def attempt():
+        # Wait for the provider's rate slot first, then check the cooldown: a call that queued behind
+        # another one must see a 429 that arrived while it was waiting.
+        await providers.throttle(provider)
+        if await redis.exists(cooldown_key):
+            raise SearchUnavailable(f"{provider} is cooling down after a rate limit")
+        return await fetch()
+
     try:
-        results = await with_retry(fetch, max_retries=config.llm_max_retries, delay=config.llm_retry_delay,
-                                   retry_if=lambda e: not _is_rate_limited(e))
+        results = await with_retry(attempt, max_retries=config.llm_max_retries, delay=config.llm_retry_delay,
+                                   retry_if=lambda e: not (_is_rate_limited(e) or isinstance(e, SearchUnavailable)))
     except httpx.HTTPStatusError as e:
         if _is_rate_limited(e):
             await redis.setex(cooldown_key, _retry_after(e), "1")
@@ -167,6 +175,9 @@ def _providers_for(redis: aioredis.Redis, config: Config, query: str, kind: str,
             calls.append(("gdelt", lambda: _free_search(redis, config, "gdelt", query,
                                                         lambda: providers.fetch_gdelt(query, n))))
     elif kind == "paper":
+        if "openalex" in enabled:
+            calls.append(("openalex", lambda: _free_search(redis, config, "openalex", query,
+                                                           lambda: providers.fetch_openalex(query, n))))
         if "arxiv" in enabled:
             calls.append(("arxiv", lambda: _free_search(redis, config, "arxiv", query,
                                                         lambda: providers.fetch_arxiv(query, n))))
@@ -208,15 +219,23 @@ async def search_kind(redis: aioredis.Redis, config: Config, query: str, kind: s
     return interleave(ok)
 
 
+def _title_key(title: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", title.lower()))
+
+
 def dedupe_new(result_lists: list[list[dict]], existing: list[dict]) -> list[dict]:
-    """Interleaved results whose URL is not already a source, first occurrence wins."""
-    seen = {s["url"].rstrip("/") for s in existing}
+    """Interleaved results that are not already a source, first occurrence wins. Matches on URL and on
+    title, because the same paper or article often appears under several URLs (arXiv, DOI, publisher)."""
+    seen_urls = {s["url"].rstrip("/") for s in existing}
+    seen_titles = {_title_key(s["title"]) for s in existing}
     fresh = []
     for s in interleave(result_lists):
-        url = s["url"].rstrip("/")
-        if url not in seen:
-            seen.add(url)
-            fresh.append(s)
+        url, title = s["url"].rstrip("/"), _title_key(s["title"])
+        if url in seen_urls or (len(title) > 15 and title in seen_titles):
+            continue
+        seen_urls.add(url)
+        seen_titles.add(title)
+        fresh.append(s)
     return fresh
 
 
