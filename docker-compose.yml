@@ -1,0 +1,61 @@
+# Local development stack: the same app, TensorZero gateway and prompts as production, with Redis and
+# Postgres+pgvector in containers instead of ElastiCache/RDS, so the AWS stack can stay paused.
+#
+#   1. python scripts/local_env.py        # writes .env from the research-agent/config secret (once)
+#   2. docker compose up --build           # first build takes a while (PyTorch for embeddings)
+#   3. open http://localhost:8000          # API key: API_KEY from .env
+#
+# Groq/Tavily/LangSmith keys are real and their free-tier limits apply. Guardrails are off unless you set
+# GUARDRAILS_ENABLED=true in .env and mount AWS credentials (see the app service below).
+
+services:
+  redis:
+    image: redis:7.2-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg15     # RDS runs Postgres 15
+    environment:
+      POSTGRES_USER: research
+      POSTGRES_PASSWORD: research           # local-only container, not reachable from outside this machine
+      POSTGRES_DB: research
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U research"]
+      interval: 5s
+      retries: 10
+
+  tensorzero:
+    build:
+      context: .
+      dockerfile: tensorzero/Dockerfile
+    environment:
+      GROQ_API_KEY: ${GROQ_API_KEY:?set GROQ_API_KEY in .env}
+    ports: ["3000:3000"]
+
+  app:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    env_file: .env
+    environment:
+      CONFIG_SOURCE: env
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://research:research@postgres:5432/research
+      TENSORZERO_URL: http://tensorzero:3000
+    # To run with Bedrock guardrails locally: set GUARDRAILS_ENABLED=true in .env and uncomment
+    # (read-only mount of your AWS CLI credentials; ApplyGuardrail is pay-per-use, no stack needed)
+    # volumes: ["${USERPROFILE}/.aws:/root/.aws:ro"]
+    ports: ["8000:8000"]
+    depends_on:
+      redis: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+      tensorzero: {condition: service_started}
+
+volumes:
+  pgdata:

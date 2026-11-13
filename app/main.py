@@ -197,6 +197,8 @@ async def _process_job(data: dict, msg_id: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global redis_client, graph
+    if not config.guardrails_enabled:
+        logger.warning("Bedrock guardrails are DISABLED (GUARDRAILS_ENABLED=false) - local development only")
     redis_client = await aioredis.from_url(config.redis_url, decode_responses=True)
     await init_pool(config)
     await db_migrate(config)

@@ -87,3 +87,16 @@ Credit protection: identical queries are cached for 6 hours and searches are cap
 Reports are reused from cache (1 hour) or long-term memory (`LTM_FRESH_HOURS`, default 24) unless **Fresh search** is ticked.
 
 ---
+
+## Run locally (AWS paused)
+
+The same app, TensorZero gateway and prompts run on your machine with Docker; Redis and Postgres+pgvector run in containers instead of ElastiCache/RDS.
+
+```bash
+python scripts/local_env.py      # once: writes .env from the research-agent/config secret (git-ignored)
+docker compose up --build        # first build downloads PyTorch for embeddings, later starts are fast
+```
+
+Open http://localhost:8000 and use `API_KEY` from `.env`. Groq, Tavily and LangSmith keys are real, so their free-tier limits apply. Bedrock guardrails are off locally (`GUARDRAILS_ENABLED=false`); see `docker-compose.yml` to turn them on.
+
+The plan for the next phases is in [docs/ROADMAP.md](docs/ROADMAP.md).

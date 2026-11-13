@@ -38,6 +38,8 @@ def intervened_policies(response: dict) -> list[str]:
 
 
 async def validate_input(config: Config, text: str) -> tuple[bool, str]:
+    if not config.guardrails_enabled:   # local development only; see Config.guardrails_enabled
+        return True, ""
     response = await with_retry(
         lambda: asyncio.to_thread(_apply_guardrail_sync, config, text, "INPUT"),
         max_retries=config.llm_max_retries,
@@ -51,6 +53,8 @@ async def validate_input(config: Config, text: str) -> tuple[bool, str]:
 
 async def validate_output(config: Config, text: str) -> tuple[bool, str, list[str]]:
     """(ok, user-facing reason, policies that fired)."""
+    if not config.guardrails_enabled:   # local development only; see Config.guardrails_enabled
+        return True, "", []
     response = await with_retry(
         lambda: asyncio.to_thread(_apply_guardrail_sync, config, text, "OUTPUT"),
         max_retries=config.llm_max_retries,

@@ -7,6 +7,10 @@ from functools import lru_cache
 
 @lru_cache(maxsize=1)
 def _load_secret() -> dict:
+    # Local development (docker-compose.yml): every setting comes from environment variables / .env,
+    # so the app runs with the AWS stack paused. Production reads the Secrets Manager secret.
+    if os.environ.get("CONFIG_SOURCE") == "env":
+        return dict(os.environ)
     region = os.environ.get("AWS_REGION", "us-east-1")
     client = boto3.client("secretsmanager", region_name=region)
     response = client.get_secret_value(SecretId="research-agent/config")
@@ -20,10 +24,15 @@ class Config:
         # AWS
         self.aws_region: str = data.get("AWS_REGION", "us-east-1")
 
-        # Bedrock Guardrails
-        self.bedrock_guardrail_id: str = data["BEDROCK_GUARDRAIL_ID"]
+        # Bedrock Guardrails. Always on in production (the secret has no GUARDRAILS_ENABLED key); local runs may
+        # turn them off when no AWS credentials are mounted into the container.
+        self.guardrails_enabled: bool = data.get("GUARDRAILS_ENABLED", "true").strip().lower() != "false"
+        self.bedrock_guardrail_id: str = data["BEDROCK_GUARDRAIL_ID"] if self.guardrails_enabled else ""
         # Task env wins: Terraform publishes a new version whenever the guardrail policy changes
-        self.bedrock_guardrail_version: str = os.environ.get("BEDROCK_GUARDRAIL_VERSION") or data["BEDROCK_GUARDRAIL_VERSION"]
+        self.bedrock_guardrail_version: str = (
+            (os.environ.get("BEDROCK_GUARDRAIL_VERSION") or data["BEDROCK_GUARDRAIL_VERSION"])
+            if self.guardrails_enabled else ""
+        )
 
         # Storage
         # Task env wins: Terraform sets it per deploy, while the secret's copy can go stale across pause/resume
