@@ -10,6 +10,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 import httpx
 
 ARXIV_URL = "https://export.arxiv.org/api/query"
@@ -53,12 +54,27 @@ def _clean(text: str | None) -> str:
     return " ".join(html.unescape(_TAG.sub(" ", text or "")).split())
 
 
+def iso_date(value: str | None) -> str:
+    """Providers send '2026-11-09', '2026-11-09T10:33:57Z' or 'Mon, 09 Nov 2026 10:33:57 GMT' -> '2026-11-09'."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        pass
+    try:
+        return parsedate_to_datetime(value).date().isoformat()
+    except (TypeError, ValueError):
+        return value[:40]   # unknown format (e.g. Brave's "2 days ago"): keep as given
+
+
 def make_source(title: str, url: str, content: str, published_date: str, provider: str, kind: str) -> dict:
     return {
         "title": _clean(title) or url.strip(),
         "url": url.strip(),
         "content": " ".join((content or "").split()),
-        "published_date": published_date or "",
+        "published_date": iso_date(published_date),
         "provider": provider,
         "kind": kind,
     }

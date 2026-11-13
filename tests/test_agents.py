@@ -28,6 +28,19 @@ def test_normalize_citations_handles_model_styles():
     assert normalize_citations(text) == "EU rules[1] and US bills[2, 6] [3] news[4] [5] keep [7] and [a link](https://x.y)"
 
 
+async def test_writer_prompt_keeps_unrelated_memory_out_of_the_report(config, monkeypatch):
+    prompts = []
+
+    async def fake_llm(config_, function_name, message):
+        prompts.append(message)
+        return "report"
+
+    monkeypatch.setattr(agents, "_tz_call", fake_llm)
+    await agents.WriterAgent(config).run("AI regulation", "### Q1\n- f [1]", True, "AI chips report [9]", "")
+    assert "Never mention it" in prompts[0] and "AI chips report" in prompts[0] and "[9]" not in prompts[0]
+    assert "Cover every sub-question" in prompts[0]
+
+
 async def test_writer_output_citations_feed_the_sources_list(config, monkeypatch):
     async def fake_llm(config_, function_name, message):
         return "Timetable published【1】; Senate bill【6】."

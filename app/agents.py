@@ -354,9 +354,10 @@ class WriterAgent:
         ltm_section = ""
         if ltm_context:
             ltm_section = (
-                f"\n\nPREVIOUS RESEARCH ON A RELATED TOPIC (use this as reference — "
-                f"build on it, correct outdated information, and highlight what has changed. "
-                f"It has no citations: anything you take from it must be confirmed by the current findings to be cited):\n"
+                f"\n\nBACKGROUND FROM EARLIER RESEARCH (may be on a different subject). Use it only where it is "
+                f"about this exact topic, to note what has changed; otherwise ignore it. Never mention it or compare "
+                f"against 'a previous report' — the reader has not seen it. It has no citations: anything you take "
+                f"from it must be confirmed by the current findings to be cited):\n"
                 f"{strip_citations(ltm_context)[:2000]}"
             )
         feedback_section = ""
@@ -379,6 +380,9 @@ class WriterAgent:
             f"Current research findings (grouped by sub-question):\n{facts}"
             f"{ltm_section}{feedback_section}\n\n"
             f"Include: Executive Summary, Key Findings, Analysis, and Conclusion.\n"
+            f"Cover every sub-question in the findings (each one under '###'); if one has no findings, say in one "
+            f"line that no reliable information was found for it. Attribute each claim to what the source actually "
+            f"says - do not merge details from different sources or documents into one claim.\n"
             f"{citation_rule}",
         ))
 

@@ -53,6 +53,14 @@ HN_ITEM = {"children": [
 ]}
 
 
+def test_iso_date_normalizes_provider_formats():
+    assert providers.iso_date("Mon, 09 Nov 2026 10:33:57 GMT") == "2026-11-09"
+    assert providers.iso_date("2026-10-02T17:59:59Z") == "2026-10-02"
+    assert providers.iso_date("2026-05-01") == "2026-05-01"
+    assert providers.iso_date("2 days ago") == "2 days ago"
+    assert providers.iso_date(None) == ""
+
+
 def test_keyword_terms_drops_stopwords_and_short_words():
     assert keyword_terms("What are the latest LLM guardrails techniques in 2026?") == ["llm", "guardrails", "techniques", "2026"]
     assert arxiv_query("LLM guardrails") == "all:llm AND all:guardrails"
