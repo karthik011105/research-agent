@@ -64,25 +64,54 @@ async def test_metering_sums_calls_across_parallel_tasks():
     assert counters["llm_calls"] == 3 and counters["input_tokens"] == 300
 
 
-async def test_judge_parses_and_clamps_scores(config, monkeypatch):
+async def test_two_judges_are_averaged_and_disagreement_flagged(config, monkeypatch):
     prompts = []
+    replies = {
+        "research_judge": '{"accuracy": 14, "completeness": "7", "unsupported_claims": 2, "honesty": 3, "reason": "a"}',
+        "research_judge_alt": 'ok {"accuracy": 4, "completeness": 5, "unsupported_claims": 4, "honesty": 5, "reason": "b"}',
+    }
 
     async def fake_llm(config_, function_name, message):
         prompts.append((function_name, message))
-        return 'Here: {"accuracy": 14, "completeness": "7", "unsupported_claims": 2, "honesty": 3, "reason": "ok"}'
+        return replies[function_name]
 
     monkeypatch.setattr(bench, "_tz_call", fake_llm)
     j = await judge_report(config, "Nobel Prize in Mathematics 2026", "report", [make_source(1)], trap=True)
-    assert (j["accuracy"], j["completeness"], j["unsupported_claims"], j["honesty"]) == (10, 7, 2, 3)
-    assert prompts[0][0] == "research_judge" and "TRAP topic" in prompts[0][1] and "Useful fact" in prompts[0][1]
-    j2 = await judge_report(config, "topic", "report", [], trap=False)
-    assert j2["honesty"] is None
+    assert [f for f, _ in prompts] == ["research_judge", "research_judge_alt"]
+    assert prompts[0][1] == prompts[1][1] and "TRAP topic" in prompts[0][1]       # identical prompt for both
+    assert j["judges"]["qwen"]["accuracy"] == 10 and j["judges"]["gpt_oss"]["accuracy"] == 4   # clamped
+    assert (j["accuracy"], j["completeness"], j["unsupported_claims"], j["honesty"]) == (7, 6, 3, 4)
+    assert j["judges_agree"] is False                                              # 10 vs 4: flagged
+
+
+async def test_one_judge_failing_still_scores(config, monkeypatch):
+    async def fake_llm(config_, function_name, message):
+        if function_name == "research_judge":
+            raise RuntimeError("LLM daily limit reached")
+        return '{"accuracy": 8, "completeness": 7, "unsupported_claims": 1}'
+
+    monkeypatch.setattr(bench, "_tz_call", fake_llm)
+    j = await judge_report(config, "topic", "report", [], trap=False)
+    assert j["accuracy"] == 8 and j["judges_agree"] is None and "error" in j["judges"]["qwen"]
+    assert j["honesty"] is None
+
+
+def test_evidence_puts_cited_sources_first_with_more_text():
+    long_text = "Model Y sold 408,158 units. " + "x" * 3000
+    cited = [{**make_source(7, url="https://ev.example/sales", content=long_text), "id": 7, "title": "EV sales 2026"}]
+    pool = [make_source(i, content=f"Pool fact {i}. " * 100) for i in range(30)] + cited
+    block = bench.evidence_block(pool, cited)
+    assert block.startswith("- EV sales 2026") and "408,158" in block
+    first_entry = block.split("\n- ")[0]
+    assert len(first_entry) > 1400                       # cited source: ~1500 chars, not 450
+    assert block.count("EV sales 2026") == 1             # listed once, though it is also in the pool
+    assert len(block) <= bench._EVIDENCE_CHARS
 
 
 async def test_execute_run_scores_each_system_and_meters_generation_only(config, redis, monkeypatch):
     async def fake_llm(config_, function_name, message):
         metering.record(llm_calls=1, input_tokens=10, output_tokens=5)
-        if function_name == "research_judge":
+        if function_name.startswith("research_judge"):
             return json.dumps({"accuracy": 8, "completeness": 7, "unsupported_claims": 1, "reason": "fine"})
         return "## Executive Summary\nGrowth was 12% [1].\n## Conclusion\nGood."
 
@@ -131,7 +160,7 @@ async def test_multi_system_uses_the_snapshot_search(config, redis, monkeypatch)
             return '{"queries": []}'
         if function_name == "research_verify":
             return "YES"
-        if function_name == "research_judge":
+        if function_name.startswith("research_judge"):
             return '{"accuracy": 9, "completeness": 9, "unsupported_claims": 0}'
         return "## Executive Summary\nFact [1]."
 

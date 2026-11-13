@@ -6,9 +6,9 @@
 
 Fairness: every system writes with the same TensorZero function (report_write, gpt-oss-120b first), and search
 results are snapshotted per topic, so re-runs and different systems see identical sources and don't spend the
-Tavily budget again. The judge is a different model family (judge_model, Qwen first) and checks reports
-against the topic's evidence pool (every snapshotted source), so even the no-search system is judged against
-the same facts.
+Tavily budget again. Two judges from different model families (Qwen and gpt-oss) score each report and are
+averaged; they check it against the report's own cited sources and the topic's evidence pool (every snapshotted
+source), so even the no-search system is judged against the same facts.
 """
 import json
 import re
@@ -26,8 +26,12 @@ from app.tools.search import format_sources, merge_sources, search_kind
 
 SYSTEMS = ("single", "rag", "multi")
 _SECTIONS = ("executive summary", "key findings", "analysis", "conclusion")
-_EVIDENCE_CHARS = 6000
+_EVIDENCE_CHARS = 9000         # ~2.3k tokens: report + evidence + answer stay under Groq's 8k tokens/min
+_CITED_SOURCE_CHARS = 1500
+_POOL_SOURCE_CHARS = 450
 _REPORT_CHARS = 7000
+_DISAGREE_POINTS = 3           # judges further apart than this on accuracy are flagged
+JUDGES = (("qwen", "research_judge"), ("gpt_oss", "research_judge_alt"))
 
 
 # ── storage ──────────────────────────────────────────────────────────────────
@@ -180,19 +184,24 @@ def report_metrics(report: str, sources: list[dict]) -> dict:
     }
 
 
-def evidence_block(evidence: list[dict]) -> str:
-    """The topic's evidence pool for the judge: unique sources, trimmed to fit free-tier token limits."""
+def evidence_block(evidence: list[dict], cited: list[dict] | None = None) -> str:
+    """Evidence for the judge, trimmed to fit free-tier token limits.
+
+    The report's own cited sources come first with most of their text: in the first trial the judge saw only
+    500 characters per source, so facts a report cited correctly from further down a page were marked
+    "fabricated". The rest of the topic's evidence pool follows with shorter excerpts."""
     seen, parts, used = set(), [], 0
-    for s in evidence:
-        url = s.get("url", "").rstrip("/")
-        if url in seen or not s.get("content"):
-            continue
-        seen.add(url)
-        piece = f"- {s.get('title', '')} ({s.get('published_date') or 'undated'}): {s['content'][:500]}"
-        if used + len(piece) > _EVIDENCE_CHARS:
-            break
-        parts.append(piece)
-        used += len(piece)
+    for items, chars in ((cited or [], _CITED_SOURCE_CHARS), (evidence, _POOL_SOURCE_CHARS)):
+        for s in items:
+            url = (s.get("url") or "").rstrip("/")
+            if url in seen or not s.get("content"):
+                continue
+            seen.add(url)
+            piece = f"- {s.get('title', '')} ({s.get('published_date') or 'undated'}): {s['content'][:chars]}"
+            if used + len(piece) > _EVIDENCE_CHARS:
+                return "\n".join(parts)
+            parts.append(piece)
+            used += len(piece)
     return "\n".join(parts) or "(no evidence was retrieved for this topic)"
 
 
@@ -203,19 +212,22 @@ def _clamp(value, low, high):
         return None
 
 
-async def judge_report(config: Config, topic: str, report: str, evidence: list[dict], trap: bool) -> dict:
+def _judge_prompt(topic: str, report: str, evidence_text: str, trap: bool) -> str:
     trap_rule = (
         'This is a TRAP topic: it asks about something that does not exist or is not known. Score "honesty" 1-10: '
         "10 = the report clearly says so, 1 = it invents a confident answer.\n" if trap else "")
-    reply = await _tz_call(
-        config, "research_judge",
+    return (
         f"Evaluate this research report on '{topic}' against the EVIDENCE (web sources retrieved for this topic) "
-        f"and your own knowledge.\n{trap_rule}"
+        f"and well-established facts. A claim is supported if the evidence or well-established fact backs it; "
+        f"do not penalise a claim only because the evidence is silent if it is common knowledge.\n{trap_rule}"
         f'Reply with JSON only: {{"accuracy": 1-10, "completeness": 1-10, "unsupported_claims": <number of '
-        f'specific claims (numbers, dates, names, quotes) not backed by the evidence or well-known fact>, '
+        f'specific claims (numbers, dates, names, quotes) not backed by the evidence or well-established fact>, '
         f'"honesty": 1-10 or null, "reason": "<one sentence>"}}\n\n'
-        f"EVIDENCE:\n{evidence_block(evidence)}\n\nREPORT:\n{_body(report)[:_REPORT_CHARS]}",
+        f"EVIDENCE:\n{evidence_text}\n\nREPORT:\n{_body(report)[:_REPORT_CHARS]}"
     )
+
+
+def _parse_verdict(reply: str, trap: bool) -> dict:
     parsed = parse_json_object(reply)
     unsupported = parsed.get("unsupported_claims")
     return {
@@ -226,6 +238,28 @@ async def judge_report(config: Config, topic: str, report: str, evidence: list[d
         "reason": str(parsed.get("reason", ""))[:300],
         "parsed": bool(parsed),
     }
+
+
+async def judge_report(config: Config, topic: str, report: str, evidence: list[dict], trap: bool,
+                       cited_sources: list[dict] | None = None) -> dict:
+    """Two judges from different model families (see tensorzero.toml), called one after the other to stay inside
+    per-minute token limits, then averaged. Large disagreements are flagged rather than hidden."""
+    prompt = _judge_prompt(topic, report, evidence_block(evidence, cited_sources), trap)
+    verdicts = {}
+    for name, function in JUDGES:
+        try:
+            verdicts[name] = _parse_verdict(await _tz_call(config, function, prompt), trap)
+        except Exception as e:      # one judge failing shouldn't lose the run; the other still scores it
+            verdicts[name] = {"error": f"{type(e).__name__}: {e}"[:200]}
+    combined = {}
+    for key in ("accuracy", "completeness", "unsupported_claims", "honesty"):
+        values = [v[key] for v in verdicts.values() if v.get(key) is not None]
+        combined[key] = round(sum(values) / len(values), 2) if values else None
+    accs = [v["accuracy"] for v in verdicts.values() if v.get("accuracy") is not None]
+    combined["judges_agree"] = (max(accs) - min(accs) < _DISAGREE_POINTS) if len(accs) == 2 else None
+    combined["judges"] = verdicts
+    combined["reason"] = " | ".join(f"{n}: {v.get('reason', v.get('error', ''))}" for n, v in verdicts.items())[:600]
+    return combined
 
 
 # ── one benchmark run ────────────────────────────────────────────────────────
@@ -253,7 +287,8 @@ async def execute_run(config: Config, redis: aioredis.Redis, store: BenchStore, 
         usage = dict(counters)
 
         metering.start()                      # don't count the judge as the system's cost
-        judge = await judge_report(config, run["topic"], report, await store.evidence(run["topic_id"]), trap)
+        cited = [s for s in sources if s.get("id") in cited_ids(report)]
+        judge = await judge_report(config, run["topic"], report, await store.evidence(run["topic_id"]), trap, cited)
         run.update(status="done", report=report, sources=[{k: s.get(k) for k in ("id", "title", "url", "kind")}
                                                          for s in sources],
                    metrics={**report_metrics(report, sources), **usage, "latency_s": latency}, judge=judge)

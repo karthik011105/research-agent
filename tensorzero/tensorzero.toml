@@ -20,18 +20,27 @@ model_name = "openai/gpt-oss-20b"
 type = "groq"
 model_name = "qwen/qwen3.8-27b"
 
-# Judges score reports written by gpt-oss-120b, so they prefer a different model family (Qwen) to avoid a
-# model grading its own writing. Falls back to gpt-oss-20b when Qwen is rate-limited.
+# Two judges from different model families, averaged (app/bench.py, eval.py uses judge A). Reports are written by
+# gpt-oss-120b; judge A is Qwen only (no fallback, so it never silently becomes a gpt-oss judge - rate limits are
+# waited out instead). Judge B is gpt-oss: since every benchmarked system writes with the same model, any
+# self-preference applies to all systems equally and doesn't skew the comparison.
 [models.judge_model]
-routing = ["groq_qwen", "groq_gpt_oss_20b"]
+routing = ["groq_qwen"]
 
 [models.judge_model.providers.groq_qwen]
 type = "groq"
 model_name = "qwen/qwen3.8-27b"
 
-[models.judge_model.providers.groq_gpt_oss_20b]
+[models.judge_alt_model]
+routing = ["groq_gpt_oss_20b", "groq_gpt_oss_120b"]
+
+[models.judge_alt_model.providers.groq_gpt_oss_20b]
 type = "groq"
 model_name = "openai/gpt-oss-20b"
+
+[models.judge_alt_model.providers.groq_gpt_oss_120b]
+type = "groq"
+model_name = "openai/gpt-oss-120b"
 
 [functions.research_summarize]
 type = "chat"
@@ -94,6 +103,17 @@ type = "chat"
 [functions.research_judge.variants.primary]
 type = "chat_completion"
 model = "judge_model"
+weight = 1.0
+temperature = 0.0
+max_tokens = 800
+system_template = "templates/research_judge_system.minijinja"
+
+[functions.research_judge_alt]
+type = "chat"
+
+[functions.research_judge_alt.variants.primary]
+type = "chat_completion"
+model = "judge_alt_model"
 weight = 1.0
 temperature = 0.0
 max_tokens = 800
