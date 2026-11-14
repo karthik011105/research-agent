@@ -1,5 +1,5 @@
 # 1) the web app (frontend/): React + Vite, built to static files. The Results page bundles bench/results/.
-FROM node:22-slim AS web
+FROM node:24-slim AS web
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
