@@ -1,12 +1,6 @@
 # Roadmap: from "it works" to "it's measurably better, self-improving and safer"
 
-**Status as of 2026-11-13:** Phase 1 is live (commit `05896b0`).
-- Multi-source research over parallel sub-questions
-- Scraper
-- Question router
-- Guardrail v2
-- Job hand-back on shutdown
-- 84 tests
+**Status as of 2026-11-14:** Steps 0 to 6 are built, deployed and measured on live AWS. The results are in the README and in `docs/WRITEUP.md`, and the raw numbers in `bench/results/`. Step 7 lacks only the demo video. 378 tests.
 
 ## Overview
 
@@ -88,6 +82,13 @@
   - Qwen can't serve as a writer fallback (1k output tokens/min).
 - `v1` stopped on the daily quota. Continue the next day with `bash scripts/resume_safe.sh`, then `python bench/run.py --url <alb> --label v1 --set small`.
 
+**Result (2026-11-14, label `v2`, 8-topic set):**
+- Accuracy on the 6 regular topics: single call 5.9, basic RAG 8.9, multi-agent 7.5.
+- The multi-agent system was ahead only on news (9.2 against 7.5) and used about 9 times the tokens of RAG.
+- The two judges were 3 or more points apart on 6 of 23 reports.
+- Still open: the RAG run for trap topic `x3` (the daily search cap was reached), and the human spot-check.
+- Tables: `bench/results/v2.md`. Discussion: `docs/WRITEUP.md`, section 3.
+
 ## Step 3: Critic panel with debate (2–3 sessions). Rule-based, and the baseline for Step 4
 - [ ] **3a Claim splitter**:
   - Break the report into single claims, each tied to its `[n]` source.
@@ -115,13 +116,12 @@
 - The best rule-based setup is the default.
 - A regression test covers the ISO-vs-EU case.
 
-**Status (2026-11-13): built, not yet measured live.**
+**Status (2026-11-14): measured live.** On 111 labelled claims, one critic caught 49% of the planted errors with 21% false alarms. The panel caught 93% with none. Debate added nothing, because the critics disagreed on 1 claim. `CRITIC_MODE` is still `single`; the measured best is `panel`.
 - Code:
   - `app/critics.py`: claim splitter, passage picker, fact-checker + skeptic, quote check, debate, code judge.
   - `app/critic_eval.py`: error injection and scoring.
   - `POST /bench/critic-eval` runs one setup on a topic's saved sources.
-- `CRITIC_MODE` stays `single` in production until the comparison is run (`single` / `panel` / `debate`).
-- The live comparison needs the benchmark's saved sources and Groq quota, so it runs together with Step 2.
+- `CRITIC_MODE` stayed `single` in production until the comparison was run (`single` / `panel` / `debate`). Switching it to `panel` is the owner's decision.
 
 ## Step 4: Learning from scores ⭐ (3–4 sessions). The system improves itself from feedback
 All three parts are **learning-based**. No model weights change; the system learns *decisions* from outcomes. Statistics are stored in the existing Postgres, so nothing is added to the bill. TensorZero's built-in experiments would need a ClickHouse database, an extra always-on cost, so they aren't used.
@@ -166,7 +166,8 @@ All three parts are **learning-based**. No model weights change; the system lear
 
 **Done when:** the chart shows traffic shifting to the best variant, and the benchmark confirms that variant really scores higher.
 
-**Status (2026-11-13): built, not yet measured live.**
+**Status (2026-11-14): critic learners run live, writer bandit not yet.**
+- Live: 110 trust updates moved only the weights for dates (fact-checker 0.65, skeptic 0.35). The debate policy saw one disagreement. The writer bandit has no live data, because `LEARNING_ENABLED` stayed off.
 - `app/learning.py`: CriticTrust (4a), DebatePolicy (4b), WriterBandit (4c), LearningService, with state in Postgres.
 - The critic panel uses learned trust and debate rounds. Writer variants B (`writer_20b`) and C (`cite_numbers`) are weight-0 TensorZero variants pinned by the bandit.
 - Rewards are computed after each job, plus 👍/👎 (`POST /feedback/{job_id}`). The learners are visible at `GET /stats/learning`.
@@ -175,7 +176,7 @@ All three parts are **learning-based**. No model weights change; the system lear
   - the bandit sends over 70% of late traffic to the best writer
   - the debate policy learns 1 round for numbers and 0 for general claims
   - trust shifts towards the critic that is right
-- Live measurement runs together with Steps 2 and 3, once Groq quota allows.
+- Still open: switch `LEARNING_ENABLED` on and measure the writer bandit on live traffic.
 
 **Stretch goal, after Step 7:**
 - Train a small open critic model with real RL (DPO/GRPO) on the labelled verdicts.
@@ -201,7 +202,12 @@ All three parts are **learning-based**. No model weights change; the system lear
 
 **Done when:** there is a propagation matrix, contamination numbers before and after the defenses, and one full self-healing cycle demonstrated.
 
-**Status (2026-11-13): built, not yet run live.** Modules in `app/security/`:
+**Status (2026-11-14): run live.**
+- Attacks: none of 10 runs reached its goal, and 9 were stopped at fact extraction, so the critics and the output guardrail were not tested.
+- Memory: with shared memory a poisoned report was served word for word to another user. Per-session memory blocked it. Verified-only storage blocked it only when the critic had rejected the report.
+- Self-healing: 0 of 15 proposed rules passed their tests, so the full cycle is not demonstrated yet.
+
+Modules in `app/security/`:
 - `attacks.py`: 5 attack kinds × 3 phrasings, each carrying a unique canary.
 - `propagation.py`: stage tracing through LangGraph `astream`.
 - `memory_poisoning.py`: plant a poisoned report, query as another user, then clean up.
@@ -226,7 +232,7 @@ Already visible in the tests: verified-only writes help only when the critic cau
 
 **Done when:** the UI shows live progress, and a monitored topic produces a dated diff.
 
-**Status (2026-11-13): built, not yet run live.**
+**Status (2026-11-14):** the live timeline is in use on the deployed app. Topic monitoring is deployed, but no monitor has been run live yet.
 - 6a: `app/progress.py`.
   - Every agent emits events into a Redis stream per job.
   - `GET /stream/{job_id}` relays them as SSE, replays earlier events, and sends a keep-alive every 15 s for the ALB.
@@ -237,9 +243,9 @@ Already visible in the tests: verified-only writes help only when the critic cau
   - At most 5 topics, at least every 6 hours apart. `/monitors` endpoints and a UI section.
 
 ## Step 7: Publish (1–2 sessions)
-- [x] README rewritten with pipeline, architecture and defense-in-depth diagrams (2026-11-13). The results tables are placeholders until the live run.
-- [ ] Fill in the README and write-up results from the live run.
-- [x] Write-up drafted: `docs/WRITEUP.md`. The method is complete and the results are pending.
+- [x] README rewritten with pipeline, architecture and defense-in-depth diagrams (2026-11-13).
+- [x] README and write-up results filled in from the live run (2026-11-14).
+- [x] Write-up: `docs/WRITEUP.md`, with the method, the results and the open issues.
 - [ ] A 2-minute demo video and a stable URL (free DuckDNS).
 
 ---
@@ -254,3 +260,9 @@ Already visible in the tests: verified-only writes help only when the critic cau
 **Known limits to state honestly:**
 - arXiv, Semantic Scholar and GDELT often rate-limit requests from AWS; OpenAlex is the reliable source for papers.
 - The judges are LLMs, so the benchmark uses objective metrics, error-injection labels and human spot-checks wherever possible.
+
+**Open issues from the live run (2026-11-14):**
+- Reports can be cut off mid-sentence when the writer's output limit runs out (3 of 10 attack-run reports). The app does not detect it.
+- Nothing rates a source, so weak pages such as social-media posts get cited.
+- The attack tracer can't tell a poisoned page listed as a source from a poisoned claim.
+- Rule proposals overfit to the one page they are written from.
