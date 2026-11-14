@@ -534,6 +534,11 @@ async def rewrite_for_safety(config: Config, state: dict, policies: list[str]) -
     return report + (sources_section(report, state["sources"]) if state["live_sources"] else "")
 
 
+# The fact-checker gave no verdict (a reasoning model can spend its whole output budget thinking). The report is
+# published with this note instead of failing the job; another rewrite wouldn't help, since nothing was checked.
+CRITIC_UNAVAILABLE = "NO\n- The automated fact-check could not complete for this draft, so its claims were not checked."
+
+
 class CriticAgent:
     """Checks the report's claims against the cited sources (or for basic coherence when there are none)."""
 
@@ -560,7 +565,13 @@ class CriticAgent:
                 f"Reply with YES if it passes or NO with a brief reason:\n\n"
                 f"{report[:self.config.agent_report_truncate]}"
             )
-        check = await _tz_call(self.config, "research_verify", prompt)
+        try:
+            check = await _tz_call(self.config, "research_verify", prompt)
+        except ValueError as e:
+            if "no text content" not in str(e):
+                raise
+            logger.warning(f"CriticAgent: no verdict from the model, report left unverified ({str(e)[:120]})")
+            return False, CRITIC_UNAVAILABLE
         passed = check.strip().upper().startswith("YES")
         return passed, "" if passed else check.strip()[:1000]
 
@@ -782,6 +793,8 @@ class OrchestratorAgent:
 
     def route_after_verify(self, state: ResearchState) -> str:
         """Orchestrator decision: rewrite with critic feedback or finish."""
+        if state.get("critic_feedback") == CRITIC_UNAVAILABLE:
+            return END
         if not state["verified"] and state.get("iterations", 0) < self.config.agent_max_iterations:
             logger.info(f"Critic rejected report - rewriting (iteration {state['iterations']})")
             return "write"

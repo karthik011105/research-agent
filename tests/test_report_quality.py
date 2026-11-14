@@ -264,3 +264,36 @@ def test_writer_and_critic_prompts_forbid_merged_figures_and_unsupported_advice(
         assert "actionable takeaways" not in text
     critic = (TEMPLATES / "research_verify_system.minijinja").read_text(encoding="utf-8")
     assert "combines figures" in critic and "recommends a product" in critic
+
+
+# ── a fact-checker that gives no verdict (live bug: reasoning used the whole output budget) ──
+
+async def test_no_verdict_from_the_fact_checker_publishes_the_report_with_a_note(config, redis, monkeypatch, no_scrape):
+    async def search_kind_(redis_, config_, query, kind, allow_paid=True, recency=""):
+        return [make_source(1, kind=kind)]
+
+    class NoVerdictLLM(ScriptedLLM):
+        async def __call__(self, config_, function_name, message, **kwargs):
+            if function_name == "research_verify":
+                self.calls.append(function_name)
+                raise ValueError("TensorZero returned no text content: {'content': [{'type': 'thought'}]}")
+            return await super().__call__(config_, function_name, message, **kwargs)
+
+    llm = NoVerdictLLM({"sub_questions": [{"question": "Q", "queries": ["q"], "kinds": ["web"]}]}, [])
+    monkeypatch.setattr(agents, "search_kind", search_kind_)
+    monkeypatch.setattr(agents, "_tz_call", llm)
+    config.search_max_rounds = 1
+    final = await build_graph(config, redis).ainvoke(initial_state("topic", "s", [], ""))
+    assert final["report"] and final["verified"] is False
+    assert llm.calls.count("report_write") == 1          # no pointless rewrite: nothing was checked
+    assert review_notes(final) == ["The automated fact-check could not complete for this draft, so its claims "
+                                   "were not checked."]
+
+
+async def test_other_critic_errors_still_fail_loudly(config, monkeypatch):
+    async def broken(*args, **kwargs):
+        raise ValueError("something else")
+
+    monkeypatch.setattr(agents, "_tz_call", broken)
+    with pytest.raises(ValueError):
+        await agents.CriticAgent(config).run("report [1]", [{**make_source(1), "id": 1}])

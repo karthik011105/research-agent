@@ -262,7 +262,8 @@ type = "chat_completion"
 model = "research_model"
 weight = 1.0
 temperature = 0.0
-max_tokens = 1500
+# 2500: gpt-oss reasons before answering, and checking every section can use 1500 tokens on reasoning alone
+max_tokens = 2500
 system_template = "templates/research_verify_system.minijinja"
 
 [functions.research_verify.variants.strict]
@@ -270,7 +271,7 @@ type = "chat_completion"
 model = "research_model_strict"
 weight = 0.0
 temperature = 0.0
-max_tokens = 1500
+max_tokens = 2500
 system_template = "templates/research_verify_system.minijinja"
 
 [functions.research_judge]
