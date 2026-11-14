@@ -766,6 +766,9 @@ resource "aws_secretsmanager_secret_version" "config" {
     # LLM providers (consumed by TensorZero sidecar)
     OPENAI_API_KEY   = "REPLACE_ME"
     GROQ_API_KEY     = "REPLACE_ME"
+    # Backup Groq keys: TensorZero tries the same model on each key before falling back (tensorzero.toml)
+    GROQ_API_KEY_2   = "REPLACE_ME"
+    GROQ_API_KEY_3   = "REPLACE_ME"
 
     # Live web search — empty = report from model knowledge only
     TAVILY_API_KEY   = ""
@@ -869,7 +872,11 @@ resource "aws_ecs_task_definition" "app" {
       portMappings = [{ containerPort = 3000, protocol = "tcp" }]
       secrets = [
         { name = "OPENAI_API_KEY", valueFrom = "${aws_secretsmanager_secret.config.arn}:OPENAI_API_KEY::" },
-        { name = "GROQ_API_KEY",   valueFrom = "${aws_secretsmanager_secret.config.arn}:GROQ_API_KEY::" }
+        { name = "GROQ_API_KEY",   valueFrom = "${aws_secretsmanager_secret.config.arn}:GROQ_API_KEY::" },
+        # ECS refuses to start the task if one of these JSON keys is missing from the secret:
+        # scripts/resume_safe.sh checks they exist before applying
+        { name = "GROQ_API_KEY_2", valueFrom = "${aws_secretsmanager_secret.config.arn}:GROQ_API_KEY_2::" },
+        { name = "GROQ_API_KEY_3", valueFrom = "${aws_secretsmanager_secret.config.arn}:GROQ_API_KEY_3::" }
       ]
       logConfiguration = {
         logDriver = "awslogs"

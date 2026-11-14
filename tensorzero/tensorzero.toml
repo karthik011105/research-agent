@@ -1,72 +1,165 @@
 [gateway]
 bind_address = "0.0.0.0:3000"
 
-# Groq only (free tier: ~8,000 tokens/min and 1,000 requests/day per model, so keep input + max_tokens
+# Groq only (free tier: ~8,000 tokens/min and a daily token limit per model and key, so keep input + max_tokens
 # of a single call well under 8,000). Tried in order; the next one is used when a model errors or hits its rate limit.
 # Model ids change over time — list the ones your key can use: GET https://api.groq.com/openai/v1/models
 # To use OpenAI again: add a provider with type = "openai", model_name = "gpt-4o-mini" and put it first in routing.
-[models.research_model]
+#
+# Backup keys: every provider exists once per Groq key (GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3), and each
+# routing tries the SAME model on every key before falling back to the next model. A key that hits its limit just
+# hands the call to the next key. All three keys must exist in the research-agent/config secret: ECS will not start
+# the task if one is missing (scripts/resume_safe.sh checks this).
+
 # Qwen is NOT a fallback here: Groq's free tier caps it at 1,000 output tokens per minute and rejects any request
 # whose max_tokens is larger, which is every research function (plan 1200 ... report_write 3500).
-routing = ["groq_gpt_oss_120b", "groq_gpt_oss_20b"]
+[models.research_model]
+routing = ["groq_gpt_oss_120b", "groq_gpt_oss_120b_k2", "groq_gpt_oss_120b_k3", "groq_gpt_oss_20b", "groq_gpt_oss_20b_k2", "groq_gpt_oss_20b_k3"]
 
 [models.research_model.providers.groq_gpt_oss_120b]
 type = "groq"
 model_name = "openai/gpt-oss-120b"
+api_key_location = "env::GROQ_API_KEY"
+
+[models.research_model.providers.groq_gpt_oss_120b_k2]
+type = "groq"
+model_name = "openai/gpt-oss-120b"
+api_key_location = "env::GROQ_API_KEY_2"
+
+[models.research_model.providers.groq_gpt_oss_120b_k3]
+type = "groq"
+model_name = "openai/gpt-oss-120b"
+api_key_location = "env::GROQ_API_KEY_3"
 
 [models.research_model.providers.groq_gpt_oss_20b]
 type = "groq"
 model_name = "openai/gpt-oss-20b"
+api_key_location = "env::GROQ_API_KEY"
 
-# Benchmark runs pin the "strict" variants below: gpt-oss-120b only, no fallback, so every benchmarked report is
-# written by the same model. When its daily token limit is reached the call fails and the runner waits for the
-# next day instead of silently mixing in gpt-oss-20b. Normal research keeps the fallback (variant "primary").
+[models.research_model.providers.groq_gpt_oss_20b_k2]
+type = "groq"
+model_name = "openai/gpt-oss-20b"
+api_key_location = "env::GROQ_API_KEY_2"
+
+[models.research_model.providers.groq_gpt_oss_20b_k3]
+type = "groq"
+model_name = "openai/gpt-oss-20b"
+api_key_location = "env::GROQ_API_KEY_3"
+
+# Benchmark runs pin the "strict" variants below: gpt-oss-120b only (on any key), so every benchmarked report is
+# written by the same model. When every key is out of daily tokens the call fails and the runner stops for the
+# day instead of silently mixing in gpt-oss-20b. Normal research keeps the fallback (variant "primary").
 [models.research_model_strict]
-routing = ["groq_gpt_oss_120b"]
+routing = ["groq_gpt_oss_120b", "groq_gpt_oss_120b_k2", "groq_gpt_oss_120b_k3"]
 
 [models.research_model_strict.providers.groq_gpt_oss_120b]
 type = "groq"
 model_name = "openai/gpt-oss-120b"
+api_key_location = "env::GROQ_API_KEY"
 
-# Two judges from different model families, averaged (app/bench.py, eval.py uses judge A). Reports are written by
-# gpt-oss-120b; judge A is Qwen only (no fallback, so it never silently becomes a gpt-oss judge - rate limits are
-# waited out instead). Judge B is gpt-oss: since every benchmarked system writes with the same model, any
-# self-preference applies to all systems equally and doesn't skew the comparison.
+[models.research_model_strict.providers.groq_gpt_oss_120b_k2]
+type = "groq"
+model_name = "openai/gpt-oss-120b"
+api_key_location = "env::GROQ_API_KEY_2"
+
+[models.research_model_strict.providers.groq_gpt_oss_120b_k3]
+type = "groq"
+model_name = "openai/gpt-oss-120b"
+api_key_location = "env::GROQ_API_KEY_3"
+
 # Step 3 critic panel: the skeptic deliberately uses another model family than the fact-checker (gpt-oss-120b).
-# Qwen first; gpt-oss-20b when Qwen is rate-limited (still a different model from the fact-checker).
+# Qwen first; gpt-oss-20b when Qwen is rate-limited on every key (still a different model from the fact-checker).
 [models.skeptic_model]
-routing = ["groq_qwen", "groq_gpt_oss_20b"]
+routing = ["groq_qwen", "groq_qwen_k2", "groq_qwen_k3", "groq_gpt_oss_20b", "groq_gpt_oss_20b_k2", "groq_gpt_oss_20b_k3"]
 
 [models.skeptic_model.providers.groq_qwen]
 type = "groq"
 model_name = "qwen/qwen3.8-27b"
+api_key_location = "env::GROQ_API_KEY"
+
+[models.skeptic_model.providers.groq_qwen_k2]
+type = "groq"
+model_name = "qwen/qwen3.8-27b"
+api_key_location = "env::GROQ_API_KEY_2"
+
+[models.skeptic_model.providers.groq_qwen_k3]
+type = "groq"
+model_name = "qwen/qwen3.8-27b"
+api_key_location = "env::GROQ_API_KEY_3"
 
 [models.skeptic_model.providers.groq_gpt_oss_20b]
 type = "groq"
 model_name = "openai/gpt-oss-20b"
+api_key_location = "env::GROQ_API_KEY"
+
+[models.skeptic_model.providers.groq_gpt_oss_20b_k2]
+type = "groq"
+model_name = "openai/gpt-oss-20b"
+api_key_location = "env::GROQ_API_KEY_2"
+
+[models.skeptic_model.providers.groq_gpt_oss_20b_k3]
+type = "groq"
+model_name = "openai/gpt-oss-20b"
+api_key_location = "env::GROQ_API_KEY_3"
 
 # Step 4c writer variant B: gpt-oss-20b only (no silent switch to 120b), so the bandit compares what it thinks it does
 [models.writer_20b_model]
-routing = ["groq_gpt_oss_20b"]
+routing = ["groq_gpt_oss_20b", "groq_gpt_oss_20b_k2", "groq_gpt_oss_20b_k3"]
 
 [models.writer_20b_model.providers.groq_gpt_oss_20b]
 type = "groq"
 model_name = "openai/gpt-oss-20b"
+api_key_location = "env::GROQ_API_KEY"
 
+[models.writer_20b_model.providers.groq_gpt_oss_20b_k2]
+type = "groq"
+model_name = "openai/gpt-oss-20b"
+api_key_location = "env::GROQ_API_KEY_2"
+
+[models.writer_20b_model.providers.groq_gpt_oss_20b_k3]
+type = "groq"
+model_name = "openai/gpt-oss-20b"
+api_key_location = "env::GROQ_API_KEY_3"
+
+# Two judges from different model families, averaged (app/bench.py, eval.py uses judge A). Judge A is Qwen only
+# (no fallback to another model, so it never silently becomes a gpt-oss judge). Judge B is gpt-oss: every
+# benchmarked system writes with the same model, so any self-preference applies to all systems equally.
 [models.judge_model]
-routing = ["groq_qwen"]
+routing = ["groq_qwen", "groq_qwen_k2", "groq_qwen_k3"]
 
 [models.judge_model.providers.groq_qwen]
 type = "groq"
 model_name = "qwen/qwen3.8-27b"
+api_key_location = "env::GROQ_API_KEY"
 
+[models.judge_model.providers.groq_qwen_k2]
+type = "groq"
+model_name = "qwen/qwen3.8-27b"
+api_key_location = "env::GROQ_API_KEY_2"
+
+[models.judge_model.providers.groq_qwen_k3]
+type = "groq"
+model_name = "qwen/qwen3.8-27b"
+api_key_location = "env::GROQ_API_KEY_3"
+
+# Not 120b: that daily quota is reserved for the writer
 [models.judge_alt_model]
-routing = ["groq_gpt_oss_20b"]   # not 120b: that daily quota is reserved for the writer
+routing = ["groq_gpt_oss_20b", "groq_gpt_oss_20b_k2", "groq_gpt_oss_20b_k3"]
 
 [models.judge_alt_model.providers.groq_gpt_oss_20b]
 type = "groq"
 model_name = "openai/gpt-oss-20b"
+api_key_location = "env::GROQ_API_KEY"
 
+[models.judge_alt_model.providers.groq_gpt_oss_20b_k2]
+type = "groq"
+model_name = "openai/gpt-oss-20b"
+api_key_location = "env::GROQ_API_KEY_2"
+
+[models.judge_alt_model.providers.groq_gpt_oss_20b_k3]
+type = "groq"
+model_name = "openai/gpt-oss-20b"
+api_key_location = "env::GROQ_API_KEY_3"
 
 [functions.research_summarize]
 type = "chat"

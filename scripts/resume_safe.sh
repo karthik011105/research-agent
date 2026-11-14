@@ -6,6 +6,17 @@ REGION=us-east-1
 DB_ID=research-agent-postgres
 cd "$(dirname "$0")/../terraform"
 
+# ECS won't start TensorZero if a Groq key it references is missing from the secret: check names first (values never printed)
+missing=$(aws secretsmanager get-secret-value --secret-id research-agent/config --region "$REGION" \
+  --query SecretString --output text | python -c "
+import json, sys
+s = json.load(sys.stdin)
+need = ['GROQ_API_KEY', 'GROQ_API_KEY_2', 'GROQ_API_KEY_3']
+print(' '.join(k for k in need if not str(s.get(k, '')).strip() or s.get(k) == 'REPLACE_ME'))")
+if [ -n "$missing" ]; then
+  echo "ABORT: set these in Secrets Manager -> research-agent/config before resuming: $missing"; exit 1
+fi
+
 status() { aws rds describe-db-instances --db-instance-identifier "$DB_ID" --region "$REGION" \
              --query "DBInstances[0].DBInstanceStatus" --output text; }
 
