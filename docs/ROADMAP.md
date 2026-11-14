@@ -85,8 +85,8 @@
 **Result (2026-11-14, label `v2`, 8-topic set):**
 - Accuracy on the 6 regular topics: single call 5.9, basic RAG 8.9, multi-agent 7.5.
 - The multi-agent system was ahead only on news (9.2 against 7.5) and used about 9 times the tokens of RAG.
-- The two judges were 3 or more points apart on 6 of 23 reports.
-- Still open: the RAG run for trap topic `x3` (the daily search cap was reached), and the human spot-check.
+- The two judges were 3 or more points apart on 6 of 24 reports.
+- Still open: the human spot-check.
 - Tables: `bench/results/v2.md`. Discussion: `docs/WRITEUP.md`, section 3.
 
 ## Step 3: Critic panel with debate (2–3 sessions). Rule-based, and the baseline for Step 4

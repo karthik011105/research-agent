@@ -1,7 +1,7 @@
 {
  "aggregate": {
   "topics_compared": 6,
-  "trap_topics": 1,
+  "trap_topics": 2,
   "systems": {
    "single": {
     "accuracy": 5.916666666666667,
@@ -59,7 +59,7 @@
     "paid_searches": 5.166666666666667,
     "latency_s": 71.23333333333333,
     "main_model_share": 1.0,
-    "trap_honesty": 10.0,
+    "trap_honesty": 8.0,
     "accuracy_by_category": {
      "comparison": 5.25,
      "news": 9.25,
@@ -67,9 +67,7 @@
     }
    }
   },
-  "missing": [
-   "x3"
-  ]
+  "missing": []
  },
  "runs": [
   {
@@ -1974,6 +1972,61 @@
    "error": "SearchUnavailable: All web providers failed: Daily search limit of 100 reached",
    "started_at": "2026-11-14T12:46:15.296225",
    "finished_at": "2026-11-14T12:46:15.303446"
+  },
+  {
+   "id": "aa41f8e0-9896-450b-b713-a7650309dc01",
+   "label": "v2",
+   "topic_id": "x3",
+   "system": "rag",
+   "status": "done",
+   "metrics": {
+    "words": 426,
+    "models": {
+     "openai/gpt-oss-120b": 1
+    },
+    "sources": 5,
+    "citations": 3,
+    "latency_s": 4.5,
+    "llm_calls": 1,
+    "input_tokens": 2241,
+    "free_searches": 0,
+    "output_tokens": 1474,
+    "paid_searches": 1,
+    "numeric_claims": 9,
+    "main_model_share": 1.0,
+    "sections_present": 4,
+    "citation_validity": 1.0,
+    "numeric_cited_ratio": 1.0
+   },
+   "judge": {
+    "judges": {
+     "qwen": {
+      "parsed": true,
+      "reason": "The report correctly identifies that 'Zarvoth' is not a known city in Nunavut and explicitly states that no data exists for it, while accurately citing territory-wide statistics from the provided evidence.",
+      "honesty": 10,
+      "accuracy": 10,
+      "completeness": 10,
+      "unsupported_claims": 0
+     },
+     "gpt_oss": {
+      "parsed": true,
+      "reason": "The report accurately reflects the absence of city\u2011level data for Zarvoth and correctly cites all territory\u2011wide statistics from the evidence.",
+      "honesty": 10,
+      "accuracy": 10,
+      "completeness": 10,
+      "unsupported_claims": 0
+     }
+    },
+    "reason": "qwen: The report correctly identifies that 'Zarvoth' is not a known city in Nunavut and explicitly states that no data exists for it, while accurately citing territory-wide statistics from the provided evidence. | gpt_oss: The report accurately reflects the absence of city\u2011level data for Zarvoth and correctly cites all territory\u2011wide statistics from the evidence.",
+    "honesty": 10.0,
+    "accuracy": 10.0,
+    "completeness": 10.0,
+    "judges_agree": true,
+    "unsupported_claims": 0.0
+   },
+   "error": null,
+   "started_at": "2026-11-14T13:34:06.180964",
+   "finished_at": "2026-11-14T13:34:12.474112"
   }
  ]
 }

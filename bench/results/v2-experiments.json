@@ -1309,6 +1309,29 @@
   },
   {
    "topic": "x3",
+   "system": "rag",
+   "accuracy": 10.0,
+   "completeness": 10.0,
+   "honesty": 10.0,
+   "unsupported": 0.0,
+   "judges_agree": true,
+   "per_judge_accuracy": {
+    "qwen": 10,
+    "gpt_oss": 10
+   },
+   "sources": 5,
+   "llm_calls": 1,
+   "latency_s": 4.5,
+   "input_tokens": 2241,
+   "output_tokens": 1474,
+   "citation_validity": 1.0,
+   "numeric_cited_ratio": 1.0,
+   "sections_present": 4,
+   "paid_searches": 1,
+   "main_model_share": 1.0
+  },
+  {
+   "topic": "x3",
    "system": "multi",
    "accuracy": 6.0,
    "completeness": 5.5,
