@@ -1,3 +1,5 @@
+import os
+import pathlib
 import asyncio
 import time
 import uuid
@@ -7,6 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse, Response, FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import redis.asyncio as aioredis
@@ -38,6 +41,7 @@ from app.queue import (
 )
 from app.agents import build_graph, initial_state, quick_reply, review_notes, rewrite_for_safety, with_review_notes
 from app.output import generate_pdf, generate_json_report, get_report_diff
+from app.history import PostgresHistoryStore, history_record
 from app.eval import evaluate_report, run_batch_evaluation, fetch_recent_topics
 
 config = Config()
@@ -249,6 +253,12 @@ async def _process_job(data: dict, msg_id: str):
         elif output_format == "json":
             result["structured"] = generate_json_report(topic, report_text, job_id, datetime.utcnow(), result["sources"])
 
+        row = history_record(job_id, session_id, result)
+        if row and history_store is not None:
+            try:
+                await history_store.save(row)
+            except Exception as e:
+                log.warning(f"Could not save the report to history: {e}")
         await publish(result)
         log.info("Job completed successfully")
     except Exception as e:
@@ -262,7 +272,7 @@ async def _process_job(data: dict, msg_id: str):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_client, graph, bench_store, learning, rule_store, rulebook, monitor_store
+    global redis_client, graph, bench_store, learning, rule_store, rulebook, monitor_store, history_store
     if not config.guardrails_enabled:
         logger.warning("Bedrock guardrails are DISABLED (GUARDRAILS_ENABLED=false) - local development only")
     redis_client = await aioredis.from_url(config.redis_url, decode_responses=True)
@@ -282,6 +292,8 @@ async def lifespan(app: FastAPI):
     app.state.config = config
     monitor_store = PostgresMonitorStore(get_pool())
     await monitor_store.migrate()
+    history_store = PostgresHistoryStore(get_pool())
+    await history_store.migrate()
     worker = asyncio.create_task(_worker_loop())
     scheduler = asyncio.create_task(_monitor_loop())
     yield
@@ -308,9 +320,33 @@ class ResearchRequest(BaseModel):
     fresh: bool = False  # skip cache and long-term memory, always search the live web
 
 
-@app.get("/")
-async def frontend():
-    return FileResponse("/app/index.html")
+# The web app (frontend/, built by Vite into /app/web). Its pages are client-side routes, so each one returns the
+# same index.html; the API routes are all on other paths. Without a build (local runs) the classic page is served.
+WEB_DIR = pathlib.Path(os.environ.get("WEB_DIR", "/app/web"))
+CLASSIC_PAGE = pathlib.Path(os.environ.get("CLASSIC_PAGE", "/app/index.html"))
+WEB_PAGES = ("/", "/history", "/history/{job_id}", "/dashboard", "/watch")
+
+
+def _web_index() -> pathlib.Path:
+    index = WEB_DIR / "index.html"
+    return index if index.exists() else CLASSIC_PAGE
+
+
+async def frontend(job_id: str | None = None):
+    return FileResponse(_web_index(), headers={"Cache-Control": "no-cache"})
+
+
+for _path in WEB_PAGES:
+    app.add_api_route(_path, frontend, methods=["GET"], include_in_schema=False)
+
+if (WEB_DIR / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=WEB_DIR / "assets"), name="assets")
+
+
+@app.get("/classic", include_in_schema=False)
+async def classic_frontend():
+    """The original single-page UI, kept as a fallback."""
+    return FileResponse(CLASSIC_PAGE)
 
 
 @app.get("/health")
@@ -368,6 +404,33 @@ async def download_pdf(job_id: str):
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename={job_id}.pdf"},
     )
+
+
+# ── report history (the web app's History page) ─────────────────────────────
+
+history_store: PostgresHistoryStore | None = None
+
+
+@app.get("/reports", dependencies=[Depends(require_api_key)])
+async def list_reports(limit: int = 50, q: str = ""):
+    return {"reports": await history_store.list(max(1, min(limit, 200)), q.strip()[:200])}
+
+
+@app.get("/reports/{job_id}", dependencies=[Depends(require_api_key)])
+async def get_report(job_id: str):
+    row = await history_store.get(job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such report")
+    return row
+
+
+@app.get("/reports/{job_id}/pdf", dependencies=[Depends(require_api_key)])
+async def report_pdf(job_id: str):
+    row = await history_store.get(job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such report")
+    return Response(content=generate_pdf(row["topic"], row["report"]), media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename={job_id}.pdf"})
 
 
 @app.get("/stats", dependencies=[Depends(require_api_key)])

@@ -13,6 +13,20 @@ It is also **measured against simpler systems**, and the results are reported as
 
 ---
 
+## The web app
+
+A React app served by the same API, with four pages:
+- **Research:** ask a question and watch each step live (plan, search, read, write, fact-check). The report has clickable `[n]` citations that jump to the source in a side panel.
+- **History:** every report you have asked for, searchable, each one reopenable and downloadable as a PDF.
+- **Topic watch:** topics re-researched on a schedule, with what changed since the previous run.
+- **Results:** the benchmark, fact-checker and security results below, as charts and tables.
+
+| Research | Report | Results |
+|---|---|---|
+| ![Research page](docs/screenshots/research.png) | ![A report with citations and sources](docs/screenshots/report.png) | ![Results dashboard](docs/screenshots/results.png) |
+
+---
+
 ## What happens when you ask a question
 
 ```mermaid
@@ -214,9 +228,11 @@ bash scripts/pause_safe.sh              # stop paying for compute; data is kept
 bash scripts/resume_safe.sh             # bring it back (the URL changes on each resume)
 ```
 
+**Web app development:** `cd frontend && npm install && API_URL=http://<app> npm run dev` runs the UI locally against a deployed API. The app image builds it (`app/Dockerfile`), and the old one-page UI is still at `/classic`.
+
 API keys (Groq, Tavily, LangSmith, the app's `API_KEY`) live in the Secrets Manager secret `research-agent/config`. A local Docker setup also exists (`docker compose up`, see `scripts/local_env.py`).
 
-**Tests:** `pip install -r requirements-dev.txt && pytest` runs 378 tests. They include end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit-convergence simulations.
+**Tests:** `pip install -r requirements-dev.txt && pytest` runs 386 tests. They include end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit-convergence simulations.
 
 ## Project layout
 
@@ -231,7 +247,9 @@ app/
   progress.py      Step 6 live progress events (Redis streams -> SSE)
   monitoring.py    Step 6 topic monitors and "what changed"
   tools/           search providers, scraper
+  history.py       every finished report, for the History page
   cache.py, memory.py, queue.py, guardrails.py, main.py, ...
+frontend/          React + Vite + Tailwind web app (Research, History, Topic watch, Results)
 bench/             topics, runner and report for the benchmark
 pyrit_dashboard/   weekly red-team service and dashboard
 tensorzero/        model routing, fallbacks, variants and prompts

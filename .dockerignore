@@ -1,0 +1,10 @@
+# keep the build context small and free of local state
+**/node_modules
+frontend/dist
+**/__pycache__
+.git
+.terraform
+terraform
+*.tfplan
+.env
+*.env
