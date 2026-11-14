@@ -70,3 +70,13 @@ async def test_pipeline_emits_a_timeline_including_parallel_branches(config, red
     assert [c["passed"] for c in checked] == [False, True]
     planned = next(d for k, d in events if k == "planned")
     assert [sq["question"] for sq in planned["sub_questions"]] == ["What techniques exist?", "What do practitioners say?"]
+
+
+def test_stream_waits_end_before_the_redis_read_timeout():
+    """A blocking XREAD longer than the client's socket timeout raises TimeoutError and kills the live timeline
+    (seen live: the stream dropped about 6 s into every job)."""
+    import inspect
+    from redis.asyncio.connection import AbstractConnection
+    socket_timeout = inspect.signature(AbstractConnection.__init__).parameters["socket_timeout"].default
+    default_wait = inspect.signature(progress.sse_events).parameters["keepalive_s"].default
+    assert default_wait < socket_timeout

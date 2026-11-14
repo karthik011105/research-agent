@@ -57,7 +57,13 @@ async def read_events(redis, job_id: str, last_id: str, block_ms: int) -> list[t
     return out
 
 
-async def sse_events(read, job_id: str, keepalive_s: float = 15, max_s: float = 900):
+# Each wait for new events must end before the Redis client's read timeout (redis-py's default socket_timeout is
+# 5 s). With 15 s, a quiet stretch in a job (searching, writing, fact-checking) raised a Redis TimeoutError that
+# ended the stream, so the browser's timeline stopped after the first few steps while the job carried on.
+KEEPALIVE_S = 4
+
+
+async def sse_events(read, job_id: str, keepalive_s: float = KEEPALIVE_S, max_s: float = 900):
     """Server-Sent Events text for a job, ending after a final event or max_s. `read(last_id, block_ms)` fetches.
     A comment line every keepalive_s keeps the connection open through the load balancer's 60 s idle timeout."""
     last, started = "0", time.monotonic()

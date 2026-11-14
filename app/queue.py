@@ -71,7 +71,7 @@ async def consume_jobs(redis: aioredis.Redis, config: Config) -> list[dict]:
         config.consumer_name,
         {config.stream_key: ">"},
         count=1,
-        block=5000,
+        block=4000,     # must end before the Redis client's 5 s read timeout
     )
     if not messages:
         return []
