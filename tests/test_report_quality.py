@@ -297,3 +297,9 @@ async def test_other_critic_errors_still_fail_loudly(config, monkeypatch):
     monkeypatch.setattr(agents, "_tz_call", broken)
     with pytest.raises(ValueError):
         await agents.CriticAgent(config).run("report [1]", [{**make_source(1), "id": 1}])
+
+
+def test_no_review_notes_for_a_report_written_without_sources():
+    # the critic can only complain that a model-knowledge report cites nothing
+    state = {"verified": False, "live_sources": False, "critic_feedback": "NO\n- The report includes no citations"}
+    assert review_notes(state) == []

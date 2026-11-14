@@ -501,13 +501,9 @@
           document.getElementById('job-status').textContent = 'Complete';
           document.getElementById('report-box').innerHTML = renderMarkdown(data.report);
           document.getElementById('report-box').style.display = 'block';
-          const notes = data.review_notes || [];
-          const notesBox = document.getElementById('review-notes');
-          notesBox.textContent = notes.length
-            ? `⚠ Not fully verified: the fact-checker still flagged ${notes.length} point${notes.length === 1 ? '' : 's'} ` +
-              'after the final rewrite. They are listed under "Fact-check notes" at the end of the report.'
-            : '';
-          notesBox.style.display = notes.length ? 'block' : 'none';
+          // Unresolved fact-check points stay in the report's own "Fact-check notes" section at the end; the
+          // banner above the report was dropped at the owner's request (it showed on most news reports).
+          document.getElementById('review-notes').style.display = 'none';
           renderSources(data);
           document.getElementById('export-actions').style.display = 'flex';
           // feedback teaches the writer bandit (Step 4c); only reports the pipeline just wrote can be rated

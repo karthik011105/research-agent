@@ -330,7 +330,11 @@ def review_notes(state: dict) -> list[str]:
     report can end with problems left; they are shown to the reader instead of being dropped silently."""
     if state.get("verified"):
         return []
-    flagged = [c for c in state.get("claim_verdicts") or [] if c.get("decision") != "keep"]
+    if state.get("live_sources") is False:
+        # No search results: the report says it is written from model knowledge, and the critic can only object
+        # that nothing is cited - not a useful note for the reader (seen live when the daily search cap ran out)
+        return []
+    flagged =[c for c in state.get("claim_verdicts") or [] if c.get("decision") != "keep"]
     if flagged:
         return [(c.get("text") or "")[:240] + (f" ({c['fix'][:200]})" if c.get("fix") else "") for c in flagged][:10]
     text = re.sub(r"^\s*NO\b[\s.:\-\u2014]*", "", state.get("critic_feedback") or "", flags=re.IGNORECASE)
