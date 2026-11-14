@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 
 from app.config import Config
 from app.pool import init_pool, close_pool, get_pool
-from app.bench import CRITIC_MODES, SYSTEMS, PostgresBenchStore, execute_critic_eval, execute_run, new_run
+from app.bench import (
+    CRITIC_MODES, SYSTEMS, PostgresBenchStore, execute_critic_eval, execute_run, new_run, rejudge_run,
+)
 from app import progress
 from app.monitoring import MAX_MONITORS, MIN_INTERVAL_HOURS, PostgresMonitorStore, schedule_due, what_changed
 from app.learning import LearningService, PostgresLearningStore, outcome_parts
@@ -464,6 +466,39 @@ async def bench_critic_eval(req: CriticEvalRequest):
     _bench_tasks.add(task)
     task.add_done_callback(_bench_tasks.discard)
     return {"id": run["id"], "status": "running"}
+
+
+class RejudgeRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=60)
+    systems: list[str] = ["multi", "rag", "single"]
+    trap_topics: list[str] = []          # topic ids judged for honesty (bench/topics.json "trap": true)
+
+
+@app.post("/bench/rejudge", dependencies=[Depends(require_api_key)])
+async def bench_rejudge(req: RejudgeRequest):
+    """Scores a label's finished runs again from their saved reports (after a judge fix). Runs in the background."""
+    runs = await bench_store.done_runs(req.label, req.systems)
+
+    async def rejudge_all():
+        for run in runs:
+            try:
+                await rejudge_run(config, bench_store, run, run["topic_id"] in req.trap_topics)
+            except Exception as e:
+                logger.warning(f"Re-judging {run['id']} failed: {e}")
+    _background(rejudge_all())
+    return {"label": req.label, "runs": len(runs)}
+
+
+class SupersedeRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=60)
+    system: str
+    topic_ids: list[str]
+
+
+@app.post("/bench/supersede", dependencies=[Depends(require_api_key)])
+async def bench_supersede(req: SupersedeRequest):
+    """Retires a system's finished runs so the runner does them again; the old rows stay as 'superseded'."""
+    return {"superseded": await bench_store.supersede(req.label, req.system, req.topic_ids)}
 
 
 @app.get("/bench/runs", dependencies=[Depends(require_api_key)])

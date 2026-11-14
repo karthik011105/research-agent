@@ -26,8 +26,10 @@ from app.tools.search import format_sources, merge_sources, search_kind
 
 SYSTEMS = ("single", "rag", "multi")
 _SECTIONS = ("executive summary", "key findings", "analysis", "conclusion")
-_EVIDENCE_CHARS = 9000         # ~2.3k tokens: report + evidence + answer stay under Groq's 8k tokens/min
-_CITED_SOURCE_CHARS = 1500
+_EVIDENCE_CHARS = 13000        # ~3.3k tokens: report + evidence + answer stay under Groq's 8k tokens/min
+_CITED_BUDGET = 11000          # every cited source must be visible to the judge, however many a report cites
+_CITED_SOURCE_CHARS = 1500     # the writer's own per-source limit (source_char_limit)
+_MIN_CITED_CHARS = 600
 _POOL_SOURCE_CHARS = 450
 _REPORT_CHARS = 7000
 _DISAGREE_POINTS = 3           # judges further apart than this on accuracy are flagged
@@ -97,6 +99,27 @@ class PostgresBenchStore:
                 run["id"], run["label"], run["topic_id"], run["system"], run["topic"], run["status"],
                 run.get("report"), json.dumps(run.get("sources") or []), json.dumps(run.get("metrics") or {}),
                 json.dumps(run.get("judge") or {}), run.get("error"), run["started_at"], run.get("finished_at"))
+
+    async def done_runs(self, label: str, systems: list[str]) -> list[dict]:
+        """Finished runs with every column, ready to be saved back (for re-judging)."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM bench_runs WHERE label=$1 AND status='done' AND system = ANY($2) "
+                                    "ORDER BY started_at", label, systems)
+        out = []
+        for r in rows:
+            d = dict(r)
+            for k in ("metrics", "judge", "sources"):
+                if isinstance(d.get(k), str):
+                    d[k] = json.loads(d[k])
+            out.append(d)
+        return out
+
+    async def supersede(self, label: str, system: str, topic_ids: list[str]) -> int:
+        """Retires finished runs so the runner does them again (e.g. after a fix to that system). Kept, not deleted."""
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("UPDATE bench_runs SET status='superseded' WHERE label=$1 AND system=$2 "
+                                        "AND topic_id = ANY($3) AND status IN ('done', 'error')", label, system, topic_ids)
+        return int(result.split()[-1])
 
     async def list_runs(self, label: str, full: bool = False) -> list[dict]:
         cols = "*" if full else "id, label, topic_id, system, status, metrics, judge, error, started_at, finished_at"
@@ -196,9 +219,14 @@ def evidence_block(evidence: list[dict], cited: list[dict] | None = None) -> str
 
     The report's own cited sources come first with most of their text: in the first trial the judge saw only
     500 characters per source, so facts a report cited correctly from further down a page were marked
-    "fabricated". The rest of the topic's evidence pool follows with shorter excerpts."""
+    "fabricated". All cited sources share one budget, so a report citing 12 sources is judged on all 12 - with a
+    fixed 1,500 characters each, only the first ~6 fit, and facts from the rest looked invented (v2 run). The rest
+    of the topic's evidence pool follows with shorter excerpts."""
+    cited = [s for s in cited or [] if s.get("content")]
+    per_cited = (max(_MIN_CITED_CHARS, min(_CITED_SOURCE_CHARS, _CITED_BUDGET // len(cited))) if cited
+                 else _CITED_SOURCE_CHARS)
     seen, parts, used = set(), [], 0
-    for items, chars in ((cited or [], _CITED_SOURCE_CHARS), (evidence, _POOL_SOURCE_CHARS)):
+    for items, chars in ((cited, per_cited), (evidence, _POOL_SOURCE_CHARS)):
         for s in items:
             url = (s.get("url") or "").rstrip("/")
             if url in seen or not s.get("content"):
@@ -267,6 +295,19 @@ async def judge_report(config: Config, topic: str, report: str, evidence: list[d
     combined["judges"] = verdicts
     combined["reason"] = " | ".join(f"{n}: {v.get('reason', v.get('error', ''))}" for n, v in verdicts.items())[:600]
     return combined
+
+
+async def rejudge_run(config: Config, store: "BenchStore", run: dict, trap: bool) -> dict:
+    """Scores a finished run again from its saved report - no new generation, so a judge fix doesn't cost the
+    systems' tokens again. Cited sources are matched to the topic's saved search results by URL."""
+    evidence = await store.evidence(run["topic_id"])
+    by_url = {(s.get("url") or "").rstrip("/"): s for s in evidence if s.get("content")}
+    ids = cited_ids(run.get("report") or "")
+    cited = [{**s, **by_url.get((s.get("url") or "").rstrip("/"), {})} for s in run.get("sources") or []
+             if s.get("id") in ids]
+    run["judge"] = await judge_report(config, run["topic"], run["report"], evidence, trap, cited)
+    await store.save_run(run)
+    return run
 
 
 # ── one benchmark run ────────────────────────────────────────────────────────

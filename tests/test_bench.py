@@ -218,3 +218,43 @@ async def test_critic_eval_run_records_scores(config, monkeypatch):
     assert run["status"] == "done" and run["metrics"]["caught"] == 0.75 and json.loads(run["report"])[0]["flagged"]
     empty = await bench.execute_critic_eval(config, MemoryStore(), new_run("c1", "t9", "x", "critic_panel"), "panel")
     assert empty["status"] == "error" and "no saved sources" in empty["error"]
+
+
+def test_every_cited_source_reaches_the_judge_even_when_a_report_cites_twelve():
+    # v2 run: with 1,500 characters per source only ~6 cited sources fit, and facts from the rest looked invented
+    cited = [{**make_source(i, url=f"https://src.example/{i}", content=f"FACT-{i} " + "y" * 3000), "id": i,
+              "title": f"Source {i}"} for i in range(1, 13)]
+    pool = [make_source(i, content="pool " * 400) for i in range(40)]
+    block = bench.evidence_block(pool, cited)
+    assert all(f"FACT-{i} " in block for i in range(1, 13))
+    assert len(block) <= bench._EVIDENCE_CHARS
+    # a report with few sources still gets their full text
+    few = bench.evidence_block(pool, cited[:3])
+    assert len(few.split("\n- ")[0]) > 1400
+
+
+async def test_rejudge_scores_a_saved_report_again_without_generating(monkeypatch):
+    store = MemoryStore()
+    await store.put_snapshot("t1", "q", "web", [make_source(1, url="https://a.example/1", content="Sales rose 12%. " * 20)])
+    prompts = []
+
+    async def fake_llm(config_, function_name, message):
+        assert function_name.startswith("research_judge"), function_name   # judging only, no report writing
+        prompts.append(message)
+        return json.dumps({"accuracy": 9, "completeness": 8, "unsupported_claims": 0, "reason": "ok"})
+
+    monkeypatch.setattr(bench, "_tz_call", fake_llm)
+    run = {**new_run("v2", "t1", "EV sales", "multi"), "status": "done", "report": "Sales rose 12% [1].",
+           "sources": [{"id": 1, "title": "Page 1", "url": "https://a.example/1", "kind": "web"}],
+           "judge": {"accuracy": 4}}
+    out = await bench.rejudge_run(None, store, run, trap=False)
+    assert out["judge"]["accuracy"] == 9 and store.runs[run["id"]]["judge"]["accuracy"] == 9
+    assert all("Sales rose 12%" in p for p in prompts)           # the cited source's text came from the snapshot
+
+
+def test_single_call_baseline_may_write_from_knowledge():
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent / "tensorzero" / "templates"
+    for name in ("report_write_system", "report_write_cite_numbers_system"):
+        text = (root / f"{name}.minijinja").read_text(encoding="utf-8")
+        assert "use your own knowledge, write the report from what you know" in text and "Do not refuse." in text

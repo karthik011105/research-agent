@@ -293,7 +293,8 @@ type = "chat_completion"
 model = "judge_alt_model"
 weight = 1.0
 temperature = 0.0
-max_tokens = 800
+# gpt-oss reasons before answering: 800 output tokens ran out mid-thought and returned no verdict (v2 run)
+max_tokens = 2000
 system_template = "templates/research_judge_system.minijinja"
 
 [functions.critic_fact]
