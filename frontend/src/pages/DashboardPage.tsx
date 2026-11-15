@@ -9,8 +9,7 @@ import { Card, PageHeader } from '../components/ui'
 const SYS = bench.aggregate.systems
 const SYSTEMS = [
   { key: 'single', label: 'Single AI call', color: 'var(--color-s1)' },
-  { key: 'rag', label: 'Basic RAG', color: 'var(--color-s2)' },
-  { key: 'multi', label: 'Multi-agent (this app)', color: 'var(--color-s3)' },
+  { key: 'multi', label: 'Inquira (multi-agent)', color: 'var(--color-s3)' },
 ] as const
 const CRITIC = experiments.critic_comparison
 const SETUPS = [
@@ -115,14 +114,14 @@ export function DashboardPage() {
       <PageHeader title="Results" subtitle="Measured on the live AWS deployment, 14 Nov 2026 - 8 benchmark topics, 111 labelled claims, 10 attacks." />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Stat value={`${one(SYS.rag.accuracy)} vs ${one(SYS.multi.accuracy)}`} label="Accuracy: basic RAG vs multi-agent (1-10)" note={`Multi-agent wins on news: ${one(SYS.multi.accuracy_by_category.news)} vs ${one(SYS.rag.accuracy_by_category.news)}`} />
+        <Stat value={`${one(SYS.multi.accuracy)} vs ${one(SYS.single.accuracy)}`} label="Accuracy: Inquira vs a single AI call (1-10)" note={`On news topics: ${one(SYS.multi.accuracy_by_category.news)} vs ${one(SYS.single.accuracy_by_category.news)}`} />
         <Stat value={pct(CRITIC.panel.caught_rate)} label="Planted errors caught by two critics" note={`One critic: ${pct(CRITIC.single.caught_rate)}, with ${pct(CRITIC.single.false_alarm_rate)} false alarms`} />
         <Stat value={`0 / ${experiments.attack_runs.length}`} label="Prompt-injection attacks that reached their goal" note="9 of 10 stopped at fact extraction" />
-        <Stat value={`${Math.round((SYS.multi.input_tokens + SYS.multi.output_tokens) / 1000)}k`} label="Tokens per multi-agent report" note={`Basic RAG: ${((SYS.rag.input_tokens + SYS.rag.output_tokens) / 1000).toFixed(1)}k · ${Math.round(SYS.multi.latency_s)}s vs ${Math.round(SYS.rag.latency_s)}s`} />
+        <Stat value={`${Math.round((SYS.multi.input_tokens + SYS.multi.output_tokens) / 1000)}k`} label="Tokens per Inquira report" note={`Single call: ${((SYS.single.input_tokens + SYS.single.output_tokens) / 1000).toFixed(1)}k · ${Math.round(SYS.multi.latency_s)}s vs ${Math.round(SYS.single.latency_s)}s`} />
       </div>
 
       <section className="grid gap-4 xl:grid-cols-2">
-        <ChartCard title="Accuracy by topic type" subtitle={`Average of two AI judges, 1-10, on ${bench.aggregate.topics_compared} topics. Same model for all three systems.`}
+        <ChartCard title="Accuracy by topic type" subtitle={`Average of two AI judges, 1-10, on ${bench.aggregate.topics_compared} topics. Same model for both systems.`}
           chart={
             <ResponsiveContainer>
               <BarChart data={accuracy} barGap={2} barCategoryGap="22%">

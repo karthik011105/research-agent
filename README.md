@@ -91,34 +91,36 @@ flowchart TB
 
 ## What makes it more than a pipeline
 
-### 1. A benchmark against simpler systems
-25 fixed topics, including **trap topics** about things that don't exist. Three systems answer them with the **same model**, and the two that search read the **same saved search results**. The live run used the 8-topic `small` set (2 news, 2 technical, 2 comparison, 2 trap), which is what the free tier allows.
+### 1. A benchmark against a single AI call
+25 fixed topics, including **trap topics** about things that don't exist. A single call to the **same model** answers them, and so does the full pipeline, which reads **saved search results** so runs can be repeated. The live run used the 8-topic `small` set (2 news, 2 technical, 2 comparison, 2 trap), which is what the free tier allows.
 
 Results on the 6 regular topics (the trap topics are scored separately, below):
 
-| | A · single AI call | B · basic RAG | C · this multi-agent system |
-|---|---|---|---|
-| Accuracy (2 judges, 1–10) | 5.9 | **8.9** | 7.5 |
-| · news topics | 2.2 | 7.5 | **9.2** |
-| · technical topics | 8.2 | **9.5** | 8.0 |
-| · comparison topics | 7.2 | **9.8** | 5.2 |
-| Completeness (2 judges, 1–10) | 5.9 | **9.0** | 8.5 |
-| Unsupported claims per report | 4.4 | **0.6** | 1.5 |
-| Citations pointing at a real source | – | 100% | 100% |
-| Sources used | 0 | 5 | 10.8 |
-| AI calls · tokens · seconds per report | 1 · 1.6k · 3 s | 1 · 3.7k · 5 s | 9.5 · 34k · 71 s |
+| | Single AI call | Inquira (this multi-agent system) |
+|---|---|---|
+| Accuracy (2 judges, 1–10) | 5.9 | **7.5** |
+| · news topics | 2.2 | **9.2** |
+| · technical topics | **8.2** | 8.0 |
+| · comparison topics | **7.2** | 5.2 |
+| Completeness (2 judges, 1–10) | 5.9 | **8.5** |
+| Unsupported claims per report | 4.4 | **1.5** |
+| Citations pointing at a real source | – | 100% |
+| Sources used | 0 | 10.8 |
+| AI calls · tokens · seconds per report | 1 · 1.6k · 3 s | 9.5 · 34k · 71 s |
 
 Every metric: [bench/results/v2.md](bench/results/v2.md).
 
 **What the numbers say**
-- **Search matters most.** Without it, the model invented EU agencies and fines on a news topic (accuracy 2 from both judges).
-- **The multi-agent system did not beat basic RAG overall.** It scored higher on news and lower on technical and comparison topics, at about 9 times the tokens and 14 times the time.
+- **Inquira is far better on news.** Without live sources, the single call invented EU agencies and fines on a news topic (accuracy 2 from both judges); Inquira scored 9 on both news topics from both judges.
+- **The single call did slightly better on stable topics.** It scored higher on technical and comparison topics, where the model's own knowledge is enough. Inquira's comparison errors came from weak sources (next point).
+- **It costs more.** Inquira used about 21 times the tokens and took about 27 times as long (71 s against 3 s).
+- **The baseline has no search,** so the benchmark does not separate the gain from live search from the gain from the multi-agent design.
 - **More sources let weak pages in.** With 12 sources instead of 5, one report cited an Instagram page for LangGraph's GitHub stars and reported 762. The critic compares each claim with its cited source, so a wrong number in a bad source passes.
-- **The two judges often disagree.** They were 3 or more points apart on 4 of these 18 reports, and Qwen was the stricter one every time. Averaged per judge, RAG and multi-agent score 8.2 and 6.7 with Qwen, and 9.7 and 9.2 with gpt-oss (which returned no verdict on one multi-agent report). The news advantage comes from Qwen alone; gpt-oss scored the two systems the same there. Differences under about 1 point are noise at this size.
+- **The two judges often disagree.** They were 3 or more points apart on 5 of the 16 reports. Averaged per judge, the single call and Inquira score 5.7 and 6.7 with Qwen, and 6.2 and 9.2 with gpt-oss (which returned no verdict on one Inquira report). Both judges agree on the news result. Differences under about 1 point are noise at this size.
 
 **Trap topics**
-- *"Who won the 2026 Nobel Prize in Mathematics?"* All three systems said there is no such prize (honesty 10/10 each).
-- *A Canadian city that doesn't exist.* The single call said the city is in no official listing (10/10). The RAG and multi-agent reports invented nothing about the city: both said no city-level data was found and gave territory-wide statistics instead. Neither said the city may not exist. The judges gave the RAG report 10 and 10, and the multi-agent report 2 and 10, for much the same answer.
+- *"Who won the 2026 Nobel Prize in Mathematics?"* Both systems said there is no such prize (honesty 10/10 each).
+- *A Canadian city that doesn't exist.* The single call said the city is in no official listing (10/10). Inquira invented nothing about the city: it said no city-level data was found and gave territory-wide statistics instead, but did not say the city may not exist. One judge scored this 10 and the other 2.
 
 **How it is judged**
 - **Judging:** two judges from different model families (Qwen and gpt-oss) score each report. Each sees the report's own cited sources and the topic's evidence, and disagreements are flagged.
