@@ -30,3 +30,8 @@ def embed_sync(text: str) -> list[float]:
 async def embed(text: str) -> list[float]:
     """Embedding for `text`, computed off the event loop."""
     return await asyncio.to_thread(embed_sync, text)
+
+
+def embed_many_sync(texts: list[str]):
+    """Unit-length embeddings for many texts at once, as a (len(texts), dim) numpy array."""
+    return _get_model().encode(list(texts), normalize_embeddings=True, batch_size=64, convert_to_numpy=True)

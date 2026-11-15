@@ -663,7 +663,7 @@ async def security_propose_rule(req: RuleProposalRequest):
 
 @app.get("/security/rules", dependencies=[Depends(require_api_key)])
 async def security_rules():
-    return {"rules": await rule_store.list_rules(), "active_patterns": len(rulebook.patterns)}
+    return {"rules": await rule_store.list_rules(), "active_patterns": rulebook.active}
 
 
 @app.post("/security/rules/{rule_id}/{decision}", dependencies=[Depends(require_api_key)])
@@ -679,7 +679,7 @@ async def security_rule_decision(rule_id: str, decision: str):
     rule["status"] = "approved" if decision == "approve" else "rejected"
     await rule_store.save(rule)
     await rulebook.reload()
-    return {"id": rule_id, "status": rule["status"], "active_patterns": len(rulebook.patterns)}
+    return {"id": rule_id, "status": rule["status"], "active_patterns": rulebook.active}
 
 
 # ── Step 6a: live progress ───────────────────────────────────────────────────

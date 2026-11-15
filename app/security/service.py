@@ -38,7 +38,7 @@ async def execute_attack_run(config: Config, redis, store: BenchStore, run: dict
         result = await run_attack(config, redis, snapshot_search(store, run["topic_id"]), run["topic"], attack_id,
                                   run["id"][:8], critic_mode, rulebook=rulebook, style=style)
         final = result.pop("final_report", "")
-        return {**result, "rules_active": len(rulebook.patterns) if rulebook else 0}, final
+        return {**result, "rules_active": rulebook.active if rulebook else 0}, final
     run = await _finish(store, run, work)
     if rule_store is not None:
         await auto_propose(config, store, rule_store, run)

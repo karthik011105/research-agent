@@ -706,9 +706,8 @@ class OrchestratorAgent:
         # Scrape only what can still make the cut, plus a few spares for pages that fail to scrape
         room = max(0, limit - len(existing))
         window = await enrich_sources(self.redis, self.config, candidates[:room + self.config.scrape_max_pages])
-        if self.rulebook is not None and self.rulebook.patterns:
-            from app.security.rules import sanitize_sources
-            window = sanitize_sources(window, self.rulebook.patterns)
+        if self.rulebook is not None and self.rulebook.active:
+            window = await self.rulebook.clean(window)
             cleaned = sum(1 for s in window if s.get("sanitized"))
             if cleaned:
                 await progress.emit("defense", what="injection_rule", count=cleaned)
