@@ -7,7 +7,7 @@ It is also **measured against simpler systems**, and the results are reported as
 > **Status (2026-11-14).** Everything below runs live on AWS and was measured there, on Groq's free tier:
 > - an 8-topic benchmark against two simpler systems
 > - a critic comparison on 111 labelled claims
-> - 10 prompt-injection runs, 5 memory-poisoning runs and 15 filter-rule proposals
+> - 10 prompt-injection runs, 5 memory-poisoning runs and 27 filter-rule proposals across four designs
 >
 > The tables below come from that run. Raw numbers: [bench/results/](bench/results/). Method and discussion: [docs/WRITEUP.md](docs/WRITEUP.md). Plan: [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -186,9 +186,21 @@ No model is retrained; the system learns **decisions** from outcomes. Learned st
   | Both | yes | 0 of 2 | 0 of 2 | 0 of 2 |
 
   With no defense, the other user was handed the poisoned report word for word from the cache. Verified-only storage helps only when the critic caught the poison, while per-session memory blocks cross-user reuse either way. On related topics the poisoned report reached the writer as background 4 times, and the planted name never appeared in the new report.
-- **Self-healing guardrails.** When an attack gets through, an AI proposes a filter rule. Code tests it on the attack's **held-out phrasings** (at least 80% caught) and on **real harmless pages** (at most 2% false positives), and rejects slow or overly broad regexes. **The owner approves it** before it's applied.
+- **Self-healing guardrails.** When a poisoned page reaches the pipeline, the system proposes a filter for that attack *technique* automatically, from that one page. Code tests it on **8 hidden rewordings** of the attack, which use other names and claims (at least 80% must be caught), and on **real harmless pages** (at most 2% touched). **The owner approves it** before it's applied, and a rule that failed its tests can't be approved.
 
-  Live result: **0 of 15 proposed rules passed.** Each rule was written around the exact wording of the one page it was shown and caught none of the 8 reworded versions. False positives were at most 0.1% on 922 real pages. The tests did their job, because none of these rules would have protected anything. One example is not enough for an AI to write a rule that generalises.
+  Four designs were tested live. **None passed, so no rule was approved:**
+
+  | Design | Hidden rewordings caught (4 attacks) | Real pages touched |
+  |---|---|---|
+  | One regex written by the AI from one page (14 Nov, 15 rules) | 0%, 0%, 0%, 0% | ≤ 0.1% |
+  | Regex set, with 15 AI-written rewordings as practice and 3 revisions | 0%, 0%, 0%, 0% | 0% |
+  | Word lists written by the AI, pattern built by code | 0%, 0%, 0%, 0% | 0% |
+  | Meaning-based: sentence embeddings of the practice examples | 0%, 0%, 50%, 62.5% | ≤ 1.3% |
+
+  - **Keyword rules can't generalise from one page.** The AI's rules caught up to 100% of its *own* practice rewordings but none of the hidden ones: its rewordings all looked like the original.
+  - **Matching by meaning did better** on two attacks (4 and 5 of 8 caught), still below the pass mark.
+  - **A plain false statistic gets no rule.** It contains no instruction to the AI, so it is the critics' job, and the newer designs said so every time.
+  - **The tests worked as intended:** no weak rule went live. All 10 attacks were stopped by the other defenses anyway.
 
 ### 5. Realtime
 - **Live timeline:** Server-Sent Events from a Redis stream per job, so the browser sees each sub-question searched, the sources read, critic debates and defenses firing as they happen.
@@ -203,7 +215,7 @@ Fixed on 15 Nov 2026, after the live runs:
 
 Still open:
 - **The attack tracer follows a name.** It reports a poisoned page that is only listed as a source as "reached the final report".
-- **Rule proposals overfit.** A rule written from one example page did not catch reworded attacks (0 of 15 passed).
+- **Self-healing rules don't generalise yet.** From one attack page, the best design caught at most 5 of 8 hidden rewordings (pass mark 80%), so no rule has been approved. A trained prompt-injection classifier is the next thing to test.
 
 Details: [docs/WRITEUP.md](docs/WRITEUP.md), section 7.
 
@@ -238,7 +250,7 @@ bash scripts/resume_safe.sh             # bring it back (the URL changes on each
 
 API keys (Groq, Tavily, LangSmith, the app's `API_KEY`) live in the Secrets Manager secret `research-agent/config`. A local Docker setup also exists (`docker compose up`, see `scripts/local_env.py`).
 
-**Tests:** `pip install -r requirements-dev.txt && pytest` runs 396 tests. They include end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit-convergence simulations.
+**Tests:** `pip install -r requirements-dev.txt && pytest` runs 409 tests. They include end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit-convergence simulations.
 
 ## Project layout
 

@@ -206,6 +206,7 @@ All three parts are **learning-based**. No model weights change; the system lear
 - Attacks: none of 10 runs reached its goal, and 9 were stopped at fact extraction, so the critics and the output guardrail were not tested.
 - Memory: with shared memory a poisoned report was served word for word to another user. Per-session memory blocked it. Verified-only storage blocked it only when the critic had rejected the report.
 - Self-healing: 0 of 15 proposed rules passed their tests, so the full cycle is not demonstrated yet.
+- Self-healing, 2026-11-15: three redesigns on a stricter test (12 more proposals). Keyword rules still caught 0 of 8 hidden rewordings; meaning-based rules caught up to 5 of 8 with at most 1.3% of real pages touched. None passed; next: a trained prompt-injection classifier.
 
 Modules in `app/security/`:
 - `attacks.py`: 5 attack kinds × 3 phrasings, each carrying a unique canary.
@@ -265,4 +266,4 @@ Already visible in the tests: verified-only writes help only when the critic cau
 - Fixed 2026-11-15: cut-off drafts are detected and rewritten shorter; social-media and video sites are blocked; uncited sentences with numbers or dates are checked; the critics see each source's title and date.
 - Weak pages other than social media (e.g. press releases) can still be cited.
 - The attack tracer can't tell a poisoned page listed as a source from a poisoned claim.
-- Rule proposals overfit to the one page they are written from.
+- Self-healing rules don't generalise from one attack page yet (best: 5 of 8 hidden rewordings, pass mark 80%).
