@@ -17,6 +17,13 @@ def _load_secret() -> dict:
     return json.loads(response["SecretString"])
 
 
+DEFAULT_BLOCKED_DOMAINS = (
+    "polymarket.com", "kalshi.com", "manifold.markets", "predictit.org",
+    "facebook.com", "instagram.com", "tiktok.com", "x.com", "twitter.com", "threads.net", "pinterest.com",
+    "youtube.com", "youtu.be",
+)
+
+
 class Config:
     def __init__(self):
         data = _load_secret()
@@ -102,10 +109,12 @@ class Config:
                 "ENABLED_PROVIDERS", "tavily,brave,openalex,arxiv,semantic_scholar,gdelt,hackernews").split(",") if p.strip()
         ]
         self.semantic_scholar_api_key: str = data.get("SEMANTIC_SCHOLAR_API_KEY", "")
-        # Sources never cited: prediction/betting markets state odds, not facts. Subdomains are included.
+        # Sources never cited (subdomains included): prediction/betting markets state odds, not facts; social-media
+        # and video pages reach search results only as a post's caption or a video's description, which the critics
+        # can't check (live run: a wrong GitHub star count from an Instagram page, CNBC claims from a Facebook clip).
         self.blocked_domains: list[str] = [
-            d.strip().lower() for d in data.get(
-                "BLOCKED_DOMAINS", "polymarket.com,kalshi.com,manifold.markets,predictit.org").split(",") if d.strip()
+            d.strip().lower() for d in data.get("BLOCKED_DOMAINS", ",".join(DEFAULT_BLOCKED_DOMAINS)).split(",")
+            if d.strip()
         ]
         self.max_subquestions: int = int(data.get("MAX_SUBQUESTIONS", 3))
         self.queries_per_subquestion: int = int(data.get("QUERIES_PER_SUBQUESTION", 2))

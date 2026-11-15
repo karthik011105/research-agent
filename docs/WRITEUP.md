@@ -275,9 +275,14 @@ In simulation the bandit routes over 70% of late traffic to the best variant, wi
 - **Memory experiment.** Two questions per kind of topic and one planted report. It shows the mechanism, not a rate.
 - **Free data sources.** arXiv, Semantic Scholar and GDELT often rate-limit cloud IPs. OpenAlex is the reliable source for papers.
 
-**Open issues the run exposed**
-- **Cut-off reports.** 3 of the 10 reports from the attack runs stopped mid-sentence, and one of them was 474 characters long. The writer's output limit of 3,500 tokens also has to cover the model's hidden reasoning, and the app does not check whether a draft was cut off. All 24 benchmark reports were complete.
-- **Weak sources.** Nothing in the pipeline rates a source. Social-media pages were among the sources of 4 of the 16 benchmark reports that used search, and one wrong figure came from such a page.
+**Issues the run exposed, fixed afterwards (15 November 2026)**
+These fixes came after the measurements above, which were not repeated.
+- **Cut-off reports.** 3 of the 10 reports from the attack runs stopped mid-sentence, and one of them was 474 characters long; the writer's output limit of 3,500 tokens also has to cover the model's hidden reasoning. A cut-off draft is now detected and written again shorter, and as a last resort ends at its last complete sentence. All 24 benchmark reports were complete.
+- **Weak sources.** Social-media pages were among the sources of 4 of the 16 benchmark reports that used search, and one wrong figure came from such a page. Social-media and video sites are now blocked by default; other weak pages are not.
+- **Uncited sentences went unchecked.** The panel checked only sentences carrying a citation. In a live report the uncited summary called pgvector's 22 ms latency "lagging" behind 38-45 ms. Uncited sentences with numbers or dates are now checked against their best-matching sources.
+- **False alarms on dates.** The critics saw passages of each source but not its title and publication date, so correct dates taken from that metadata were flagged. They now see both, and may quote them.
+
+**Open issues**
 - **The attack tracer follows a name.** It can't tell a poisoned page that is listed as a source from a poisoned claim that is repeated, and its "stopped at" summary contradicted its own stage flags in the one run where that mattered.
 - **Rule proposals overfit** to the one page they are written from (section 5).
 - **Topic monitoring** is deployed and unit-tested, but no monitor has been run on the live app.
@@ -295,4 +300,4 @@ bash scripts/pause_safe.sh
 
 The collected results of experiments 2 and 3 are in `bench/results/v2-experiments.json`.
 
-All experiment code is unit-tested (378 tests), including end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit convergence.
+All experiment code is unit-tested (396 tests), including end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit convergence.

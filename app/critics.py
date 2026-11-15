@@ -39,6 +39,7 @@ class Claim:
     source_ids: list[int]
     kind: str                                   # number | date | attribution | general
     passages: list[str] = field(default_factory=list)
+    cited: bool = True                          # False: a sentence with no [n], checked against its likeliest sources
 
 
 # ── claims ───────────────────────────────────────────────────────────────────
@@ -65,7 +66,7 @@ def _sentences(body: str) -> list[str]:
     return out
 
 
-def split_claims(report: str, max_claims: int = 30) -> tuple[list[Claim], list[str]]:
+def split_claims(report: str, max_claims: int = 36) -> tuple[list[Claim], list[str]]:
     """(cited claims, uncited sentences that state numbers or dates). Code only, no LLM."""
     body = re.split(r"\n#+\s*Sources\s*\n", report)[0]
     claims, uncited = [], []
@@ -93,8 +94,24 @@ def _chunks(text: str, size: int, overlap: int) -> list[str]:
     return [text[i:i + size] for i in range(0, len(text) - overlap, step)]
 
 
+def source_header(src: dict) -> str:
+    """The source's title and publication date. Reports give dates from this metadata ("a paper published on
+    24 September 2026"), so a critic that saw only text passages flagged correct dates as unsupported (live run)."""
+    title = " ".join((src.get("title") or "").split())
+    date = (src.get("published_date") or "")[:10]
+    if not title and not date:
+        return ""
+    return f"Source: {title}" + (f" (published {date})" if date else "")
+
+
+def _source_text(src: dict) -> str:
+    """Everything a critic may quote from: the header (title, date) and the page text."""
+    return f"{source_header(src)} {src.get('content', '')}"
+
+
 def best_passages(claim: Claim, sources: list[dict], per_source: int = 2, size: int = 380) -> list[str]:
-    """The passages of the claim's cited sources that share the most terms with it (numbers count double)."""
+    """Each cited source's title and date, then its passages that share the most terms with the claim (numbers
+    count double)."""
     terms = _terms(claim.text)
     by_id = {s["id"]: s for s in sources}
     picked = []
@@ -102,6 +119,9 @@ def best_passages(claim: Claim, sources: list[dict], per_source: int = 2, size: 
         src = by_id.get(sid)
         if not src:
             continue
+        header = source_header(src)
+        if header:
+            picked.append(f"[{sid}] {header}")
         scored = []
         for chunk in _chunks(src.get("content", ""), size, overlap=80):
             ct = _terms(chunk)
@@ -111,6 +131,19 @@ def best_passages(claim: Claim, sources: list[dict], per_source: int = 2, size: 
             if score > 0 or not picked:
                 picked.append(f"[{sid}] {chunk}")
     return picked
+
+
+def likely_sources(sentence: str, sources: list[dict], k: int = 2, min_score: int = 3) -> list[int]:
+    """For a sentence written without a citation: the sources that share the most terms with it (numbers count
+    double), so the critics can still check it. Empty when nothing matches well enough."""
+    terms = _terms(sentence)
+    scored = []
+    for src in sources:
+        st = _terms(_source_text(src))
+        score = sum(2 if t[0].isdigit() else 1 for t in terms & st)
+        if score >= min_score:
+            scored.append((score, src["id"]))
+    return [sid for _, sid in sorted(scored, key=lambda x: (-x[0], x[1]))[:k]]
 
 
 # ── quotes ───────────────────────────────────────────────────────────────────
@@ -125,7 +158,7 @@ def quote_is_real(quote: str, sources: list[dict], source_ids: list[int], min_le
     if len(q) < min_len:
         return False
     q = q.split("...")[0].split("…")[0].strip() if ("..." in q or "…" in q) else q
-    texts = [_norm(s.get("content", "")) for s in sources if s["id"] in source_ids]
+    texts = [_norm(_source_text(s)) for s in sources if s["id"] in source_ids]
     return any(q in t for t in texts)
 
 
@@ -213,14 +246,18 @@ def parse_verdicts(reply: str) -> dict[int, dict]:
 
 
 def feedback_for_writer(claims: list[Claim], finals: dict[int, dict], uncited: list[str]) -> str:
+    """Exact instructions for the rewrite. `uncited` are sentences without a citation that no source matched."""
     lines = []
     for c in claims:
         f = finals.get(c.id)
+        cite = f" and cite its source [{c.source_ids[0]}]" if not c.cited and c.source_ids else ""
         if not f or f["decision"] == "keep":
+            if not c.cited:                       # true, but the reader can't see where it came from
+                lines.append(f"- FIX (uncited): \"{c.text[:200]}\" - add the citation [{c.source_ids[0]}]")
             continue
         action = "REMOVE" if f["decision"] == "remove" else "FIX"
         detail = f" - {f['fix']}" if f.get("fix") else ""
-        lines.append(f"- {action} ({f['verdict']}): \"{c.text[:200]}\"{detail}")
+        lines.append(f"- {action} ({f['verdict']}{', uncited' if not c.cited else ''}): \"{c.text[:200]}\"{detail}{cite}")
     for sentence in uncited[:8]:
         lines.append(f"- FIX (uncited): \"{sentence[:200]}\" - add the source it came from, or remove it")
     return "\n".join(lines)
@@ -229,6 +266,7 @@ def feedback_for_writer(claims: list[Claim], finals: dict[int, dict], uncited: l
 # ── the critics (LLM) ────────────────────────────────────────────────────────
 
 CRITICS = (("fact_checker", "critic_fact"), ("skeptic", "critic_skeptic"))
+_MAX_UNCITED = 8    # uncited sentences checked per draft (each costs critic tokens)
 _BATCH = 6          # claims per critic call: keeps the skeptic (Qwen) under Groq's 1,000 output tokens/minute
 
 _ROLE = {
@@ -299,6 +337,16 @@ async def run_panel(config: Config, report: str, sources: list[dict], debate: bo
     if call is None:
         from app.agents import _tz_call as call
     claims, uncited = split_claims(report)
+    # Sentences with numbers or dates but no [n] (often the Executive Summary) used to go unchecked; in the live run
+    # one summary called pgvector's 22 ms "lagging" behind 38-45 ms. They are now checked against their likeliest
+    # sources, and only the ones no source matches are left as a plain "add a citation" instruction.
+    unmatched = []
+    for sentence in uncited[:_MAX_UNCITED]:
+        ids = likely_sources(sentence, sources)
+        if ids:
+            claims.append(Claim(id=len(claims) + 1, text=sentence, source_ids=ids, kind=claim_kind(sentence), cited=False))
+        else:
+            unmatched.append(sentence)
     for c in claims:
         c.passages = best_passages(c, sources)
     votes: dict[str, dict[int, dict]] = {}
@@ -344,7 +392,7 @@ async def run_panel(config: Config, report: str, sources: list[dict], debate: bo
     details = [{"id": c.id, "text": c.text, "kind": c.kind, "sources": c.source_ids, **finals[c.id],
                 "debated": c.id in debated, "trajectory": trajectory.get(c.id),
                 "fact_checker": fc.get(c.id), "skeptic": sk.get(c.id)} for c in claims]
-    feedback = feedback_for_writer(claims, finals, uncited)
+    feedback = feedback_for_writer(claims, finals, unmatched)
     return PanelResult(passed=not feedback, feedback=feedback, claims=details, llm_calls=calls,
                        trust_events=trust_events)
 

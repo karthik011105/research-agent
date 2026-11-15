@@ -303,3 +303,43 @@ def test_no_review_notes_for_a_report_written_without_sources():
     # the critic can only complain that a model-knowledge report cites nothing
     state = {"verified": False, "live_sources": False, "critic_feedback": "NO\n- The report includes no citations"}
     assert review_notes(state) == []
+
+
+def test_cut_off_drafts_are_detected():
+    from app.agents import looks_cut_off
+    assert looks_cut_off("## Analysis\nThe data indicate that China remains dominant [5]. Europe's 20")
+    assert looks_cut_off("## Key Findings\n- Point [1].\n\n*Community & Case Studies")       # empty last heading
+    assert looks_cut_off("## Conclusion\nWatch for:")
+    assert not looks_cut_off("## Conclusion\nEV sales keep growing [1].")
+    assert not looks_cut_off("## Conclusion\nSales grew [1, 2]\n\n## Sources\n[1] A - https://a")
+    assert not looks_cut_off("| a | b |")
+
+
+def test_trim_keeps_complete_sentences_only():
+    from app.agents import trim_cut_off
+    assert trim_cut_off("Done here [2]. Also this. Europe's 20") == "Done here [2]. Also this."
+    assert trim_cut_off("A point [1].\n\n*Community & Case Studies") == "A point [1]."
+
+
+async def test_a_cut_off_draft_is_rewritten_shorter(config, monkeypatch):
+    from app import agents
+    replies = ["## Executive Summary\nChina leads [1]. Europe's share is 20", "## Executive Summary\nChina leads [1].\n\n## Conclusion\nDone [1]."]
+    prompts = []
+
+    async def fake(cfg, function, message, **kw):
+        prompts.append(message)
+        return replies.pop(0)
+    monkeypatch.setattr(agents, "_tz_call", fake)
+    report = await agents.WriterAgent(config).run("EVs", "- China leads [1]", True, "", "")
+    assert report.endswith("Done [1].") and len(prompts) == 2
+    assert "was cut off" in prompts[1] and "was cut off" not in prompts[0]
+
+
+async def test_a_draft_still_cut_off_after_the_retry_is_trimmed(config, monkeypatch):
+    from app import agents
+
+    async def fake(cfg, function, message, **kw):
+        return "## Executive Summary\nChina leads [1]. Europe's share is 20"
+    monkeypatch.setattr(agents, "_tz_call", fake)
+    report = await agents.WriterAgent(config).run("EVs", "- China leads [1]", True, "", "")
+    assert report == "## Executive Summary\nChina leads [1]."

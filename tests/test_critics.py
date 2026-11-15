@@ -174,3 +174,63 @@ async def test_pipeline_uses_the_panel_in_debate_mode(config, redis, monkeypatch
     out = await orch.verify_node(state)
     assert out["verified"] is False and len(out["claim_verdicts"]) == 5
     assert "Tesla sold 2.5 million" in out["critic_feedback"]
+
+
+def test_critics_see_each_sources_title_and_date_and_may_quote_them():
+    # live run: a report said "a paper published on 24 September 2026" and both critics flagged the correct date,
+    # because they saw only text passages, not the source's metadata
+    src = [{"id": 1, "title": "A taxonomy of RAG hallucinations", "published_date": "2026-09-24T00:00:00",
+            "content": "We propose a five-part taxonomy of hallucination causes in retrieval-augmented generation."}]
+    claim = Claim(1, "A 24 September 2026 paper proposed a five-part taxonomy [1]", [1], "date")
+    passages = best_passages(claim, src)
+    assert passages[0] == "[1] Source: A taxonomy of RAG hallucinations (published 2026-09-24)"
+    assert any("five-part taxonomy" in p for p in passages[1:])
+    assert quote_is_real("published 2026-09-24", src, [1])
+    assert quote_is_real("A taxonomy of RAG hallucinations", src, [1])
+    assert not quote_is_real("published 2026-10-24", src, [1])
+
+
+class UncitedCritics:
+    """Both critics reject any claim saying 2.5 million (the source says 1.8 million) and support the rest."""
+
+    def __init__(self):
+        self.prompts = []
+
+    async def __call__(self, config, function, prompt):
+        self.prompts.append(prompt)
+        out = []
+        for cid, text in re.findall(r"CLAIM (\d+) \(type: \w+\): (.*)", prompt):
+            if "2.5 million" in text:
+                out.append(_v(int(cid), "unsupported", "Tesla sold 1.8 million vehicles in 2024", "Tesla sold 1.8 million"))
+            elif "Tesla" in text:
+                out.append(_v(int(cid), "supported", "Tesla sold 1.8 million vehicles in 2024"))
+            else:
+                out.append(_v(int(cid), "supported", "Global EV sales reached 17 million units in 2024"))
+        return json.dumps({"verdicts": out})
+
+
+async def test_an_uncited_summary_sentence_is_checked_against_its_likeliest_source(config):
+    # live run: an uncited Executive Summary sentence contradicted the sources and nothing checked it
+    report = ("## Executive Summary\nTesla sold 2.5 million vehicles in 2024, ahead of BYD.\n\n"
+              "## Key Findings\n- Global EV sales reached 17 million units in 2024 [1].\n")
+    fake = UncitedCritics()
+    result = await run_panel(config, report, SOURCES, debate=False, call=fake)
+    uncited = [c for c in result.claims if "2.5 million" in c["text"]]
+    assert len(uncited) == 1 and uncited[0]["sources"][0] == 2 and uncited[0]["decision"] == "fix"
+    assert "1.8 million" in uncited[0]["fix"]
+    assert not result.passed and "uncited" in result.feedback and "cite its source [2]" in result.feedback
+    assert "Source: " in fake.prompts[0]                    # the critics saw the matched source
+
+
+async def test_a_true_uncited_sentence_only_needs_its_citation(config):
+    report = "## Executive Summary\nTesla sold 1.8 million vehicles in 2024.\n\n## Key Findings\n- EV sales reached 17 million units in 2024 [1].\n"
+    result = await run_panel(config, report, SOURCES, debate=False, call=UncitedCritics())
+    tesla = next(c for c in result.claims if "Tesla" in c["text"])
+    assert tesla["decision"] == "keep" and tesla["sources"][0] == 2
+    assert "add the citation [2]" in result.feedback
+
+
+def test_an_uncited_sentence_no_source_matches_stays_a_plain_instruction():
+    from app.critics import likely_sources
+    assert likely_sources("Prices fell by 12% last year.", SOURCES) == []
+    assert likely_sources("Tesla sold 1.8 million vehicles in 2024.", SOURCES)[0] == 2

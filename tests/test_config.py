@@ -65,3 +65,14 @@ def test_the_two_critic_panel_is_the_default_and_can_be_switched_back(local_env,
     monkeypatch.setenv("CRITIC_MODE", "Single")
     config_module._load_secret.cache_clear()
     assert Config().critic_mode == "single"
+
+
+def test_social_media_and_video_pages_are_blocked_by_default(local_env, monkeypatch):
+    from app.tools.search import is_blocked
+    monkeypatch.setenv("GUARDRAILS_ENABLED", "false")
+    blocked = Config().blocked_domains
+    for url in ("https://www.facebook.com/cnbc/videos/1", "https://m.youtube.com/watch?v=x", "https://x.com/a/status/1",
+                "https://www.instagram.com/popular/x", "https://polymarket.com/event/y"):
+        assert is_blocked(url, blocked), url
+    for url in ("https://techcrunch.com/2026/11/09/a", "https://news.ycombinator.com/item?id=1", "https://arxiv.org/abs/1"):
+        assert not is_blocked(url, blocked), url

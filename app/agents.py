@@ -465,6 +465,27 @@ class GapCheckAgent:
         return clean_queries(parsed.get("queries"), _GAP_QUERIES), clean_kinds(parsed.get("kind"))[:1]
 
 
+SHORTER_REPORT = ("\n\nYour previous draft was too long and was cut off before the end. Write a shorter report: "
+                  "at most 900 words, the most important findings only, and finish every section including the "
+                  "Conclusion.")
+_SENTENCE_END = re.compile(r"[.!?](?:\s*\[\d+(?:\s*,\s*\d+)*\])?(?=\s|$)")
+
+
+def looks_cut_off(report: str) -> bool:
+    """True when a draft stops mid-sentence: its last line doesn't end like a sentence, citation or table row."""
+    body = re.split(r"\n#+\s*Sources\s*\n", report)[0].rstrip().rstrip("*_").rstrip()
+    if not body:
+        return True
+    return body[-1] not in ".!?)]\"'|`\u201d\u2019"
+
+
+def trim_cut_off(report: str) -> str:
+    """Last resort for a draft that is still cut off: end it at its last complete sentence, so the reader never
+    sees half a sentence or an empty heading."""
+    ends = list(_SENTENCE_END.finditer(report))
+    return report[:ends[-1].end()].rstrip() if ends else report
+
+
 class WriterAgent:
     """
     Produces the final structured report from cited facts. If a related previous report exists in LTM,
@@ -506,9 +527,7 @@ class WriterAgent:
             "Say so briefly in the Executive Summary and do not invent citations."
         )
 
-        return normalize_citations(await _tz_call(
-            self.config,
-            "report_write",
+        message = (
             f"Today's date: {date.today().isoformat()}\n"
             f"Write a comprehensive, well-structured research report on: '{topic}'\n\n"
             f"Current research findings (grouped by sub-question):\n{facts}"
@@ -518,9 +537,17 @@ class WriterAgent:
             f"line that no reliable information was found for it. Attribute each claim to what the source actually "
             f"says - do not merge details from different sources or documents into one claim, and never put "
             f"figures that belong to different models, products or organisations into one sentence.\n"
-            f"{recency_rule}{citation_rule}",
-            **({"variant": variant} if variant else {}),   # only when the writer bandit chose one
-        ))
+            f"{recency_rule}{citation_rule}"
+        )
+        pinned = {"variant": variant} if variant else {}   # only when the writer bandit chose one
+        report = normalize_citations(await _tz_call(self.config, "report_write", message, **pinned))
+        if looks_cut_off(report):
+            # The output limit also covers the model's hidden reasoning, so a long draft - most often a rewrite with
+            # many fixes - can stop mid-sentence (3 of 10 attack-run reports and a live pgvector report did).
+            logger.warning("WriterAgent: draft was cut off - asking for a shorter one")
+            retry = normalize_citations(await _tz_call(self.config, "report_write", message + SHORTER_REPORT, **pinned))
+            report = retry if not looks_cut_off(retry) else trim_cut_off(retry if len(retry) > len(report) else report)
+        return report
 
 
 async def rewrite_for_safety(config: Config, state: dict, policies: list[str]) -> str:

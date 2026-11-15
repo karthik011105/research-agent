@@ -193,9 +193,13 @@ No model is retrained; the system learns **decisions** from outcomes. Learned st
 - **Topic monitoring:** a topic is re-researched on a schedule and shows what changed since the previous run (new and no-longer-reported claims, compared by code). It is deployed and unit-tested, but no monitor has been run on the live app yet.
 
 ### What the live run exposed
-These are open issues, not yet fixed:
-- **Cut-off reports.** 3 of the 10 reports from the attack runs stopped mid-sentence. The writer's output limit of 3,500 tokens also has to cover the model's hidden reasoning, and the app does not yet detect a cut-off draft. All 24 benchmark reports were complete.
-- **Weak sources.** The pipeline checks claims against their sources, not the sources themselves. Social-media pages were among the sources of 4 of the 16 benchmark reports that used search.
+Fixed on 15 Nov 2026, after the live runs:
+- **Cut-off reports.** 3 of the 10 attack-run reports, and one live report, stopped mid-sentence: the writer's output limit also has to cover the model's hidden reasoning. A cut-off draft is now detected and written again shorter; if it is still cut off, it ends at its last complete sentence.
+- **Weak sources.** Social-media and video pages were among the sources of 4 of the 16 benchmark reports that used search, and one wrong figure came from an Instagram page. They are now blocked like betting sites (`BLOCKED_DOMAINS`). Other weak pages, such as press releases, still get through.
+- **Unchecked sentences.** The critics checked only sentences with a `[n]` citation, so an uncited summary sentence that contradicted the sources went unchecked. Uncited sentences with numbers or dates are now checked against the sources that match them best.
+- **False alarms on dates.** The critics saw text passages but not each source's title and publication date, so correct dates taken from that metadata were flagged. They now see both.
+
+Still open:
 - **The attack tracer follows a name.** It reports a poisoned page that is only listed as a source as "reached the final report".
 - **Rule proposals overfit.** A rule written from one example page did not catch reworded attacks (0 of 15 passed).
 
@@ -232,7 +236,7 @@ bash scripts/resume_safe.sh             # bring it back (the URL changes on each
 
 API keys (Groq, Tavily, LangSmith, the app's `API_KEY`) live in the Secrets Manager secret `research-agent/config`. A local Docker setup also exists (`docker compose up`, see `scripts/local_env.py`).
 
-**Tests:** `pip install -r requirements-dev.txt && pytest` runs 387 tests. They include end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit-convergence simulations.
+**Tests:** `pip install -r requirements-dev.txt && pytest` runs 396 tests. They include end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit-convergence simulations.
 
 ## Project layout
 

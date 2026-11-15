@@ -262,7 +262,7 @@ Already visible in the tests: verified-only writes help only when the critic cau
 - The judges are LLMs, so the benchmark uses objective metrics, error-injection labels and human spot-checks wherever possible.
 
 **Open issues from the live run (2026-11-14):**
-- Reports can be cut off mid-sentence when the writer's output limit runs out (3 of 10 attack-run reports). The app does not detect it.
-- Nothing rates a source, so weak pages such as social-media posts get cited.
+- Fixed 2026-11-15: cut-off drafts are detected and rewritten shorter; social-media and video sites are blocked; uncited sentences with numbers or dates are checked; the critics see each source's title and date.
+- Weak pages other than social media (e.g. press releases) can still be cited.
 - The attack tracer can't tell a poisoned page listed as a source from a poisoned claim.
 - Rule proposals overfit to the one page they are written from.
