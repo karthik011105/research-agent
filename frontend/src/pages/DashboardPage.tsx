@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { CheckCircle2, CircleSlash, ShieldCheck, ShieldX, Table2, BarChart3 } from 'lucide-react'
+import { CheckCircle2, ShieldCheck, ShieldX, Table2, BarChart3 } from 'lucide-react'
 import bench from '../../../bench/results/v2.json'
 import experiments from '../../../bench/results/v2-experiments.json'
 import { Card, PageHeader } from '../components/ui'
@@ -106,10 +106,6 @@ export function DashboardPage() {
     'memory:verified_only:verified': 'Verified-only (critic missed it)', 'memory:session_scope:unverified': 'Per-user memory',
     'memory:both:verified': 'Both defenses',
   }
-  const healing = experiments.self_healing_designs
-  const healingAttacks = ['instr_claim', 'role_system', 'exfil_prompt', 'cite_hijack'] as const
-  const passedRules = healing.designs.reduce((n, d) => n + d.passed, 0)
-  const proposals = healing.designs.reduce((n, d) => n + d.proposals, 0)
 
   return (
     <div className="space-y-8">
@@ -194,20 +190,6 @@ export function DashboardPage() {
         </Card>
       </section>
 
-      <Card className="p-5">
-        <div className="mb-1 flex items-center gap-2 font-medium">
-          <CircleSlash size={16} className="text-muted" /> Self-healing filter rules: {passedRules} of {proposals} passed the hidden test
-        </div>
-        <div className="mb-4 text-xs text-muted">
-          After an attack, the system learns a filter from that one page and is tested on 8 hidden rewordings it never saw.
-          Share of hidden rewordings caught, per attack; pass mark {pct(healing.pass_mark.recall)} caught and at most {pct(healing.pass_mark.false_positive_rate)} of real pages touched.
-        </div>
-        <Table head={['Design', 'Hidden instruction', 'Fake system message', 'Steal the prompt', 'Citation hijack', 'Real pages touched']}
-          rows={healing.designs.map(d => [d.name, ...healingAttacks.map(a => pct(d.recall[a])), `${(d.max_false_positive_rate * 100).toFixed(1)}%`])} />
-        <div className="mt-3 text-xs text-muted">
-          Rules written as keywords matched only the wording of the page they came from. Matching by meaning caught up to {pct(Math.max(...healingAttacks.map(a => healing.designs[healing.designs.length - 1].recall[a])))} of the rewordings while touching at most {(healing.designs[healing.designs.length - 1].max_false_positive_rate * 100).toFixed(1)}% of real pages - still below the pass mark, so no rule was approved. The fake-statistic attack has no instruction to the AI, so it correctly gets no rule; all attacks were stopped by the other defenses.
-        </div>
-      </Card>
     </div>
   )
 }
