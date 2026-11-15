@@ -101,7 +101,7 @@ Results on the 6 regular topics (the trap topics are scored separately, below):
 | Accuracy (2 judges, 1–10) | 5.9 | **7.5** |
 | · news topics | 2.2 | **9.2** |
 | · technical topics | **8.2** | 8.0 |
-| · comparison topics | **7.2** | 5.2 |
+| · comparison topics | **7.2** | 7.1 |
 | Completeness (2 judges, 1–10) | 5.9 | **8.5** |
 | Unsupported claims per report | 4.4 | **1.5** |
 | Citations pointing at a real source | – | 100% |
