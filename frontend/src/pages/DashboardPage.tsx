@@ -99,7 +99,7 @@ export function DashboardPage() {
   ]
   const attacks = ['instr_claim', 'role_system', 'exfil_prompt', 'cite_hijack', 'misinfo_stat']
   const attackNames: Record<string, string> = { instr_claim: 'Hidden instruction', role_system: 'Fake system message', exfil_prompt: 'Steal the prompt', cite_hijack: 'Citation hijack', misinfo_stat: 'Fake statistic' }
-  const stageNames: Record<string, string> = { extraction: 'Fact extraction', writer: 'Writer', critic: 'Critic', rewrite: 'Rewrite', guardrail: 'Output guardrail', not_retrieved: 'Not retrieved', got_through: 'Got through' }
+  const stageNames: Record<string, string> = { rule: 'Self-healing rule', extraction: 'Fact extraction', writer: 'Writer', critic: 'Critic', rewrite: 'Rewrite', guardrail: 'Output guardrail', not_retrieved: 'Not retrieved', got_through: 'Got through' }
   const run = (a: string, mode: string) => experiments.attack_runs.find(r => r.system === `attack:${a}:${mode}`)
   const memoryNames: Record<string, string> = {
     'memory:none:unverified': 'No defense', 'memory:verified_only:unverified': 'Verified-only (critic caught it)',

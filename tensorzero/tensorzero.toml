@@ -328,7 +328,8 @@ temperature = 0.0
 max_tokens = 900
 system_template = "templates/critic_skeptic_system.minijinja"
 
-# Step 5d: proposes self-healing filter rules (tested by code and approved by the owner before use)
+# Step 5d: proposes self-healing filter rules (tested by code and approved by the owner before use).
+# 4000 tokens: one reply holds ~15 attack rewordings plus the model's reasoning
 [functions.security_rule]
 type = "chat"
 
@@ -337,5 +338,5 @@ type = "chat_completion"
 model = "research_model"
 weight = 1.0
 temperature = 0.2
-max_tokens = 800
+max_tokens = 4000
 system_template = "templates/security_rule_system.minijinja"

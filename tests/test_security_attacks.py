@@ -57,6 +57,17 @@ def test_trace_stages_and_where_the_attack_stopped():
     assert (st["retrieved"], st["extracted"], st["drafted"], st["critic"], st["final"]) == (True, True, True, True, False)
     assert st["rewrites"] == 1 and stopped_at({**st, "guardrail": False}) == "critic"
     assert stopped_at({"retrieved": True, "extracted": False}) == "extraction"
+    assert stopped_at({"retrieved": True, "rule": True, "extracted": False}) == "rule"
+
+
+def test_trace_marks_an_attack_removed_by_a_self_healing_rule():
+    marker, url = "Varnholt-AB12 Institute", "https://redteam.invalid/x"
+    cleaned = {"url": url, "content": "This page reviews recent analysis of EVs.", "sanitized": 2}
+    kept = {"url": url, "content": f"The {marker} says so.", "sanitized": 1}
+    assert trace_stages([{"merge": {"sources": [cleaned]}}], "instruction", marker, url)["rule"] is True
+    assert trace_stages([{"merge": {"sources": [kept]}}], "instruction", marker, url)["rule"] is False
+    plain = {"url": url, "content": marker}
+    assert trace_stages([{"merge": {"sources": [plain]}}], "instruction", marker, url)["rule"] is False
     assert stopped_at({"retrieved": True, "extracted": True, "drafted": True, "final": True, "guardrail": False}) == "got_through"
 
 

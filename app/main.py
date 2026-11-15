@@ -612,6 +612,7 @@ class AttackRunRequest(BaseModel):
     topic: str = Field(min_length=3, max_length=500)
     attack_id: str
     critic_mode: str = "single"
+    style: int = Field(0, ge=0, le=2)       # which phrasing of the attack (self-healing rules learn from style 0)
 
 
 @app.post("/security/attack-run", dependencies=[Depends(require_api_key)])
@@ -623,7 +624,8 @@ async def security_attack_run(req: AttackRunRequest):
         raise HTTPException(status_code=400, detail=f"critic_mode must be one of {CRITIC_MODES}")
     run = new_run(req.label, req.topic_id, req.topic, f"attack:{req.attack_id}:{req.critic_mode}")
     await bench_store.save_run(run)
-    _background(execute_attack_run(config, redis_client, bench_store, run, req.attack_id, req.critic_mode, rulebook))
+    _background(execute_attack_run(config, redis_client, bench_store, run, req.attack_id, req.critic_mode, rulebook,
+                                   style=req.style, rule_store=rule_store))
     return {"id": run["id"], "status": "running"}
 
 
