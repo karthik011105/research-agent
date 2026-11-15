@@ -9,7 +9,7 @@
             a remaining tie goes to the stricter verdict
   result    per claim keep / fix / remove, and exact fixes for the writer
 
-CRITIC_MODE chooses "single" (the one YES/NO critic), "panel" (two critics, no debate) or "debate".
+CRITIC_MODE chooses "single" (the one YES/NO critic), "panel" (two critics, no debate; the default) or "debate".
 """
 import json
 import logging

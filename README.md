@@ -1,6 +1,6 @@
 # Autonomous Research Agent
 
-A multi-agent research system that reads the live web, research papers, news and developer discussion. It writes reports in which every claim is cited, and a critic checks those claims against the sources. A second critic from a different model family can be switched on, and the two can debate when they disagree. The system red-teams itself with poisoned web pages and shows its work live as it runs. Everything runs on AWS, built with Terraform and deployed by CI.
+A multi-agent research system that reads the live web, research papers, news and developer discussion. It writes reports in which every claim is cited, and two critics from different model families check each claim against its source. The system red-teams itself with poisoned web pages and shows its work live as it runs. Everything runs on AWS, built with Terraform and deployed by CI.
 
 It is also **measured against simpler systems**, and the results are reported as they came out, including the ones that went against it.
 
@@ -54,7 +54,7 @@ flowchart LR
 | **Extract** (parallel) | Pulls cited facts for each sub-question from that sub-question's sources | gpt-oss-120b |
 | **Gap check** | Starts one more search round if something important is missing | gpt-oss-120b |
 | **Writer** | Writes the report with `[n]` citations. The source list is appended by code, so URLs can't be invented. | gpt-oss-120b (variant learned, see below) |
-| **Critic** | By default one fact-checker answers YES or NO with a list of problems, and the writer gets one rewrite. With `CRITIC_MODE=panel` or `debate` the report is split into claims. A **fact-checker** and a **skeptic** (different model families) judge each claim and must quote the source. Code discards invented quotes, and the critics can debate when they disagree. Anything still flagged after the last rewrite is shown to the reader under **Fact-check notes**. | gpt-oss-120b + Qwen |
+| **Critic panel** | The report is split into claims. A **fact-checker** and a **skeptic** (different model families) judge each claim and must quote the source, and code discards invented quotes. The writer gets an exact list of claims to fix (one rewrite). This is the default (`CRITIC_MODE=panel`) since it was measured best; `single` (one YES/NO checker) and `debate` remain available. Anything still flagged after the last rewrite is shown to the reader under **Fact-check notes**. | gpt-oss-120b + Qwen |
 
 ---
 
@@ -144,7 +144,7 @@ Every critic setup is scored on the same claims, with no manual labelling. The l
 
 - **The panel is what helps.** Checking claim by claim, with two critics from different model families, caught almost twice as many planted errors as one YES/NO critic, with no false alarms, for about 6 times the tokens. The comparison can't say how much of the gain comes from the second model and how much from checking claim by claim.
 - **The debate added nothing here.** After the quote check the two critics disagreed on only 1 of the 111 claims, so there was almost nothing to debate.
-- The default is still `CRITIC_MODE=single`. The measured best setup is `panel`, which costs about 17k more tokens per report.
+- **The app now uses the panel by default** (`CRITIC_MODE=panel`, since 15 Nov 2026). It costs about 17k more tokens per report. The benchmark above was run with the single critic.
 
 ### 3. Learning from scores
 No model is retrained; the system learns **decisions** from outcomes. Learned state lives in Postgres, and `GET /stats/learning` shows it.
@@ -232,7 +232,7 @@ bash scripts/resume_safe.sh             # bring it back (the URL changes on each
 
 API keys (Groq, Tavily, LangSmith, the app's `API_KEY`) live in the Secrets Manager secret `research-agent/config`. A local Docker setup also exists (`docker compose up`, see `scripts/local_env.py`).
 
-**Tests:** `pip install -r requirements-dev.txt && pytest` runs 386 tests. They include end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit-convergence simulations.
+**Tests:** `pip install -r requirements-dev.txt && pytest` runs 387 tests. They include end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit-convergence simulations.
 
 ## Project layout
 

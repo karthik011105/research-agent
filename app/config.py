@@ -122,8 +122,9 @@ class Config:
         self.critic_report_truncate: int = int(data.get("CRITIC_REPORT_TRUNCATE", 8000))
         self.critic_source_chars: int = int(data.get("CRITIC_SOURCE_CHARS", 600))
         # Step 3: "single" (one YES/NO critic), "panel" (fact-checker + skeptic) or "debate" (panel + debate on
-        # disagreements). Stays "single" until the Step 3 comparison shows which setup is best.
-        self.critic_mode: str = data.get("CRITIC_MODE", "single").strip().lower()
+        # disagreements). Default "panel": on 111 labelled claims it caught 93% of planted errors with no false
+        # alarms, against 49% and 21% false alarms for "single"; debate added nothing (bench/results/).
+        self.critic_mode: str = data.get("CRITIC_MODE", "panel").strip().lower()
         self.critic_debate_rounds: int = int(data.get("CRITIC_DEBATE_ROUNDS", 2))
         # Step 4: use learned behaviour (writer bandit, critic trust, learned debate rounds). Off = rule-based
         # baseline; labelled critic evaluations still train the learners either way.

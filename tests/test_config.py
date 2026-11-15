@@ -57,3 +57,11 @@ async def test_disabled_guardrails_skip_bedrock(local_env, monkeypatch):
     monkeypatch.setattr("app.guardrails._apply_guardrail_sync", no_bedrock)
     assert await validate_input(cfg, "anything") == (True, "")
     assert await validate_output(cfg, "anything") == (True, "", [])
+
+
+def test_the_two_critic_panel_is_the_default_and_can_be_switched_back(local_env, monkeypatch):
+    monkeypatch.setenv("GUARDRAILS_ENABLED", "false")
+    assert Config().critic_mode == "panel"               # measured best in the critic comparison
+    monkeypatch.setenv("CRITIC_MODE", "Single")
+    config_module._load_secret.cache_clear()
+    assert Config().critic_mode == "single"

@@ -116,12 +116,12 @@
 - The best rule-based setup is the default.
 - A regression test covers the ISO-vs-EU case.
 
-**Status (2026-11-14): measured live.** On 111 labelled claims, one critic caught 49% of the planted errors with 21% false alarms. The panel caught 93% with none. Debate added nothing, because the critics disagreed on 1 claim. `CRITIC_MODE` is still `single`; the measured best is `panel`.
+**Status (2026-11-14): measured live.** On 111 labelled claims, one critic caught 49% of the planted errors with 21% false alarms. The panel caught 93% with none. Debate added nothing, because the critics disagreed on 1 claim. `CRITIC_MODE` defaults to `panel` since 2026-11-15.
 - Code:
   - `app/critics.py`: claim splitter, passage picker, fact-checker + skeptic, quote check, debate, code judge.
   - `app/critic_eval.py`: error injection and scoring.
   - `POST /bench/critic-eval` runs one setup on a topic's saved sources.
-- `CRITIC_MODE` stayed `single` in production until the comparison was run (`single` / `panel` / `debate`). Switching it to `panel` is the owner's decision.
+- `CRITIC_MODE` stayed `single` in production until the comparison was run. On 2026-11-15 the owner switched the default to `panel`.
 
 ## Step 4: Learning from scores ⭐ (3–4 sessions). The system improves itself from feedback
 All three parts are **learning-based**. No model weights change; the system learns *decisions* from outcomes. Statistics are stored in the existing Postgres, so nothing is added to the bill. TensorZero's built-in experiments would need a ClickHouse database, an extra always-on cost, so they aren't used.

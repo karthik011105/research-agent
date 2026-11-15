@@ -27,7 +27,7 @@ This project asks three measurable questions of one live system, at free-tier sc
 
 A topic is split by a **planner** into up to three sub-questions. Each sub-question gets the source kinds that fit it: web, news, research papers (OpenAlex, arXiv) or community discussion (Hacker News). LangGraph searches each sub-question in its own parallel branch. A **merge** step deduplicates the results and numbers sources once, so citations from different branches can't clash. It also scrapes thin pages (behind an SSRF guard) and drops blocked domains. **Extract** branches pull cited facts per sub-question. A **gap check** may add a search round. The **writer** produces a report with `[n]` citations, and the source list is appended by code, so URLs can't be invented.
 
-Verification is done by a **critic panel**. The report is split into individual claims, and each claim is paired with the most relevant passages of its cited sources. A *fact-checker* (gpt-oss-120b) and a *skeptic* (Qwen, a different model family) give a verdict on every claim. Each must **quote** the source. Code discards any vote whose quote isn't really in the source, so a critic can't win an argument with an invented quote. Disagreements go to a **debate**: each critic sees the other's verdict and quote and may revise. The writer then gets an exact list of claims to fix or remove. The panel is switched on with `CRITIC_MODE`. The default is a single critic that reads the whole report and answers YES or NO with a list of problems.
+Verification is done by a **critic panel**. The report is split into individual claims, and each claim is paired with the most relevant passages of its cited sources. A *fact-checker* (gpt-oss-120b) and a *skeptic* (Qwen, a different model family) give a verdict on every claim. Each must **quote** the source. Code discards any vote whose quote isn't really in the source, so a critic can't win an argument with an invented quote. Disagreements go to a **debate**: each critic sees the other's verdict and quote and may revise. The writer then gets an exact list of claims to fix or remove. The panel is chosen with `CRITIC_MODE`; the alternative is a single critic that reads the whole report and answers YES or NO with a list of problems. The panel became the default after Experiment 2.
 
 The stack: Groq through a TensorZero gateway, on AWS (ECS Fargate, RDS Postgres + pgvector, ElastiCache Redis, Bedrock Guardrails), built with Terraform and deployed by CI.
 
@@ -166,7 +166,7 @@ Caught rate by error type, as the average of the per-topic rates:
 - **Trust weights:** 110 updates. Only the weights for dates moved, to 0.65 for the fact-checker and 0.35 for the skeptic. For numbers and general claims the two critics were right or wrong together, so those weights stayed at 0.50.
 - **Debate policy:** with one disagreement it had one example to learn from. It prefers 0 rounds for numbers and has no data for the other claim types.
 
-The practical conclusion is to run the panel without debate. The app's default is still the single critic (`CRITIC_MODE=single`).
+The practical conclusion is to run the panel without debate, and the app has done so by default since 15 November 2026 (`CRITIC_MODE=panel`). The benchmark in section 3 was run before that, with the single critic.
 
 ## 5. Experiment 3: where do attacks stop?
 
