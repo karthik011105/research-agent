@@ -1,8 +1,8 @@
 import { useMemo, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { BookOpen, Check, Copy, Database, ExternalLink, FileDown, Globe, Info, ListTree } from 'lucide-react'
-import type { Source } from '../lib/api'
+import { BookOpen, Check, Copy, Database, ExternalLink, FileDown, Globe, Info, ListTree, ShieldCheck } from 'lucide-react'
+import type { Source, Trust } from '../lib/api'
 import { domain, kindLabel, prepareReport } from '../lib/format'
 import { Badge, Button, Card } from './ui'
 
@@ -13,6 +13,7 @@ type Props = {
   subQuestions?: string[]
   origin?: string
   liveSources?: boolean
+  trust?: Trust | null
   onPdf?: () => void
   extraActions?: ReactNode
 }
@@ -25,7 +26,24 @@ export function OriginBadge({ origin, liveSources, count }: { origin?: string; l
   return <Badge tone="good"><Globe size={12} /> Live web · {count} sources</Badge>
 }
 
-export function ReportView({ topic, report, sources, subQuestions = [], origin, liveSources, onPdf, extraActions }: Props) {
+/** The report's trust score: the share of its claims that both critics confirmed against the sources. */
+export function TrustBadge({ trust }: { trust?: Trust | null }) {
+  if (!trust) return null
+  if (trust.score == null) return <Badge title={`Not scored: ${trust.reason || ''}`}><ShieldCheck size={12} /> Trust: not scored</Badge>
+  const tone = trust.label === 'High' ? 'good' : trust.label === 'Medium' ? 'warn' : 'bad'
+  return <Badge tone={tone} title={`${trust.claims_verified} of ${trust.claims_checked} claims verified against their sources by two critics`}>
+    <ShieldCheck size={12} /> Trust {trust.score}% · {trust.label}</Badge>
+}
+
+function trustLine(trust?: Trust | null): string | null {
+  if (!trust) return null
+  if (trust.score == null) return `Trust score not given: ${trust.reason}.`
+  const flagged = trust.claims_flagged ? ` · ${trust.claims_flagged} flagged (see the fact-check notes)` : ''
+  return `${trust.claims_verified} of ${trust.claims_checked} claims verified against their sources by two AI critics${flagged}` +
+    ` · ${trust.drafts === 2 ? 'rewritten once with the critics’ fixes' : 'passed on the first draft'}`
+}
+
+export function ReportView({ topic, report, sources, subQuestions = [], origin, liveSources, trust, onPdf, extraActions }: Props) {
   const { body, notes } = useMemo(() => prepareReport(report), [report])
   const [copied, setCopied] = useState(false)
   const [active, setActive] = useState<number | null>(null)
@@ -67,7 +85,8 @@ export function ReportView({ topic, report, sources, subQuestions = [], origin, 
         <div className="mb-6 flex flex-wrap items-start justify-between gap-3 border-b border-line pb-5">
           <div className="min-w-0">
             <h2 className="text-xl font-semibold leading-snug">{topic}</h2>
-            <div className="mt-2 flex flex-wrap gap-2"><OriginBadge origin={origin} liveSources={liveSources} count={sources.length} /></div>
+            <div className="mt-2 flex flex-wrap gap-2"><OriginBadge origin={origin} liveSources={liveSources} count={sources.length} /><TrustBadge trust={trust} /></div>
+            {trustLine(trust) && <div className="mt-2 text-xs text-muted">{trustLine(trust)}</div>}
           </div>
           <div className="flex flex-wrap gap-2">
             {extraActions}

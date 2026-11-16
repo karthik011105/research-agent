@@ -4,7 +4,7 @@ export function Card({ children, className = '' }: { children: ReactNode; classN
   return <div className={`rounded-xl border border-line bg-panel ${className}`}>{children}</div>
 }
 
-export function Badge({ children, tone = 'neutral' }: { children: ReactNode; tone?: 'neutral' | 'accent' | 'good' | 'warn' | 'bad' }) {
+export function Badge({ children, tone = 'neutral', title }: { children: ReactNode; tone?: 'neutral' | 'accent' | 'good' | 'warn' | 'bad'; title?: string }) {
   const tones = {
     neutral: 'bg-panel-2 text-ink-2 border-line',
     accent: 'bg-accent-soft text-[#8fbaf0] border-[#3987e544]',
@@ -12,7 +12,7 @@ export function Badge({ children, tone = 'neutral' }: { children: ReactNode; ton
     warn: 'bg-[#e3b3411a] text-warn border-[#e3b34144]',
     bad: 'bg-[#e667671a] text-bad border-[#e6676744]',
   }
-  return <span className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium ${tones[tone]}`}>{children}</span>
+  return <span title={title} className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium ${tones[tone]}`}>{children}</span>
 }
 
 export function Button({ children, onClick, variant = 'secondary', disabled, type = 'button', title }: {

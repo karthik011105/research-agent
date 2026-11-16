@@ -48,7 +48,7 @@ export function ResearchPage() {
             try {
               const h = await api.get<HistoryReport>(`/reports/${jobId}`)
               setResult({ status: 'done', topic: h.topic, report: h.report, sources: h.sources, sub_questions: h.sub_questions,
-                          origin: h.origin as JobResult['origin'], live_sources: h.live_sources })
+                          origin: h.origin as JobResult['origin'], live_sources: h.live_sources, trust: h.trust ?? undefined })
             } catch {
               sessionStorage.removeItem(LAST_JOB); setJobId(null)
             }
@@ -176,6 +176,7 @@ export function ResearchPage() {
           subQuestions={result.sub_questions}
           origin={result.origin}
           liveSources={result.live_sources}
+          trust={result.trust}
           onPdf={() => downloadFile(`/result/${jobId}/pdf`, `report-${jobId?.slice(0, 8)}.pdf`)}
           extraActions={<>
             {result.origin === 'pipeline' && (

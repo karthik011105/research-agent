@@ -35,7 +35,7 @@ const STAGE_OF: Record<string, StageId> = {
   searching: 'search', searched: 'search', sources: 'search', gap: 'search',
   extracting: 'read', extracted: 'read',
   writing: 'write',
-  checking: 'check', checked: 'check', debating: 'check', safety_check: 'check',
+  checking: 'check', checked: 'check', debating: 'check', safety_check: 'check', trust: 'check',
   done: 'done', error: 'done', blocked: 'done',
 }
 export const stageOf = (e: ProgressEvent): StageId | undefined => STAGE_OF[e.type]
@@ -59,6 +59,7 @@ export function describe(e: ProgressEvent): string | null {
     case 'debating': return `Critics disagree - debate round ${e.round}`
     case 'checked': return e.passed ? 'Fact-check passed' : `Fact-check: ${plural(Number(e.needs_work), 'claim')} to fix`
     case 'safety_check': return 'Safety check'
+    case 'trust': return e.score == null ? 'Trust score: not scored' : `Trust score: ${e.score}% (${e.label})`
     case 'defense': return ({ blocked_domains: `Blocked ${plural(Number(e.count), 'low-quality source')}`,
                               injection_rule: `Removed a suspected prompt injection from ${plural(Number(e.count), 'page')}`,
                               output_guardrail: 'Safety filter flagged the draft - rewriting it' } as Record<string, string>)[e.what as string] || 'Defense triggered'

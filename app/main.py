@@ -32,6 +32,7 @@ from app.security.attacks import ATTACKS, ATTACKS_BY_ID
 from app.security.memory_poisoning import DEFENSE_SETTINGS
 from app.security.rules import PostgresRuleStore, RuleBook
 from app.security.service import execute_attack_run, execute_memory_run, propose_rule_for_attack
+from app.trust import trust_score, unscored
 from app.auth import require_api_key
 from app.cache import cache_get, cache_set
 from app.guardrails import validate_input, validate_output
@@ -161,6 +162,7 @@ async def _process_job(data: dict, msg_id: str):
                 await progress.emit("memory_hit", where="long-term memory")
 
         notes: list[str] = []   # what the critic still flagged in the final draft (pipeline runs only)
+        trust = unscored("reused from cache or memory, not checked again (the original run's score is in History)")
         if hit:
             report_text, sources = hit["report"], hit.get("sources") or []
             live_sources, search_rounds, sub_questions, scraped_count = bool(sources), 0, [], 0
@@ -186,6 +188,7 @@ async def _process_job(data: dict, msg_id: str):
             scraped_count = final_state["scraped_count"]
             await progress.emit("safety_check")
             ok, reason, policies = await validate_output(config, report_text)
+            safety_rewritten = not ok
             if not ok:
                 log.info(f"Output guardrail blocked the report ({policies}) - asking the writer for a safer draft")
                 await progress.emit("defense", what="output_guardrail", policies=policies)
@@ -196,6 +199,8 @@ async def _process_job(data: dict, msg_id: str):
                 return
             # Rewrites are capped: problems the critic still found are shown with the report, not dropped silently
             notes = review_notes(final_state)
+            trust = trust_score(final_state, len(sources), safety_rewritten)
+            await progress.emit("trust", score=trust["score"], label=trust["label"])
             if notes:
                 log.info(f"Final draft still has {len(notes)} flagged point(s) - attaching them to the report")
                 report_text = with_review_notes(report_text, notes)
@@ -230,6 +235,7 @@ async def _process_job(data: dict, msg_id: str):
             "scraped_count": scraped_count,
             "writer_variant": (final_state.get("writer_variant") or "") if origin == "pipeline" else "",
             "review_notes": notes,
+            "trust": trust,
             "monitor_id": monitor_id,
             # page text stays server-side; the client only needs what it shows
             "sources": [{k: s.get(k, "") for k in ("id", "title", "url", "published_date", "provider", "kind")} for s in sources],

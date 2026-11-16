@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, History, Loader2, Search } from 'lucide-react'
 import { api, downloadFile, type HistoryItem, type HistoryReport } from '../lib/api'
 import { timeAgo } from '../lib/format'
-import { OriginBadge, ReportView } from '../components/ReportView'
+import { OriginBadge, ReportView, TrustBadge } from '../components/ReportView'
 import { Badge, Card, Empty, ErrorNote, PageHeader } from '../components/ui'
 
 export function HistoryPage() {
@@ -51,6 +51,7 @@ export function HistoryPage() {
                   <span className="text-xs text-muted">{timeAgo(r.created_at)}</span>
                   <div className="flex gap-1.5">
                     <OriginBadge origin={r.origin} liveSources={r.live_sources} count={r.sources_count} />
+                    {r.trust?.score != null && <TrustBadge trust={r.trust} />}
                     {r.notes_count > 0 && <Badge tone="warn">{r.notes_count} note{r.notes_count === 1 ? '' : 's'}</Badge>}
                   </div>
                 </div>
@@ -81,7 +82,7 @@ export function HistoryDetailPage() {
         <>
           <div className="mb-4 text-xs text-muted">{new Date(report.created_at + 'Z').toLocaleString()}</div>
           <ReportView topic={report.topic} report={report.report} sources={report.sources} subQuestions={report.sub_questions}
-            origin={report.origin} liveSources={report.live_sources}
+            origin={report.origin} liveSources={report.live_sources} trust={report.trust}
             onPdf={() => downloadFile(`/reports/${jobId}/pdf`, `report-${jobId.slice(0, 8)}.pdf`)} />
         </>
       )}

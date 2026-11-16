@@ -47,6 +47,12 @@ export async function downloadFile(path: string, filename: string) {
 
 // ── shapes returned by the API ──────────────────────────────────────────────
 
+export type Trust = {
+  score: number | null; label: string; reason?: string
+  claims_checked?: number; claims_verified?: number; claims_flagged?: number; critics_agreed?: number
+  sources?: number; drafts?: number
+}
+
 export type Source = { id: number; title: string; url: string; published_date?: string; provider?: string; kind?: string }
 
 export type JobResult = {
@@ -60,12 +66,13 @@ export type JobResult = {
   sub_questions?: string[]
   sources?: Source[]
   review_notes?: string[]
+  trust?: Trust
   monitor_id?: string
 }
 
 export type HistoryItem = {
   job_id: string; topic: string; origin: string; live_sources: boolean; sources_count: number
-  notes_count: number; created_at: string; preview: string
+  notes_count: number; created_at: string; preview: string; trust?: Trust | null
 }
 export type HistoryReport = HistoryItem & { report: string; sources: Source[]; sub_questions: string[] }
 
