@@ -51,7 +51,7 @@ function trustLine(trust?: Trust | null): string | null {
   const reasoning = trust.interpretations_checked
     ? ` · ${trust.interpretations_flagged} of ${trust.interpretations_checked} interpretation sentences flagged` : ''
   return `${trust.claims_verified} of ${trust.claims_checked} facts verified against their sources by two AI critics${flagged}${reasoning}` +
-    ` · ${(trust.drafts ?? 1) > 1 ? `rewritten ${trust.drafts === 2 ? 'once' : 'twice'} with the critics’ fixes` : 'passed on the first draft'}`
+    ` · ${trust.drafts === 2 ? 'rewritten once with the critics’ fixes' : 'passed on the first draft'}`
 }
 
 export function ReportView({ topic, report, sources, subQuestions = [], origin, liveSources, trust, reviewStatus, onPdf, extraActions }: Props) {
