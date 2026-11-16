@@ -1,14 +1,20 @@
 """Trust score for a finished report (code only, no LLM).
 
-The two-critic panel gives every claim of the final draft a verdict against its sources (app/critics.py). The trust
-score is about the report's FACTS: the share of factual claims that the critics' final decision kept.
+The two-critic panel gives every claim of the final draft a verdict against its sources (app/critics.py):
+  confirmed     "supported": a critic quoted the source passage that states it
+  unconfirmed   "unsupported" (the passages shown don't say it) or "unverified" (no critic could quote the source)
+  contradicted  "misattributed", "outdated" or "exaggerated": the source says something different, with the quote
+
+The trust score is about the report's FACTS, and separates "the source says otherwise" from "not found in the
+excerpts the critics saw" - most flags in live reports were the second kind:
 
   facts            claims outside the interpretation sections: the Executive Summary, Key Findings and any
                    other section of findings (numbers, dates, names, events, each with its [n])
   interpretations  claims in Analysis, Discussion, Conclusion, Outlook, Implications or Recommendations: the
                    writer's reasoning about the facts. They are checked too and their flags are shown, but they are
                    counted separately - "this suggests a growing market" is not wrong the way a wrong number is
-  score            facts kept / facts checked, as a percentage (all claims, if a report has no factual ones)
+  score            facts NOT contradicted by their sources / facts checked, as a percentage (all claims, if a
+                   report has no factual ones). Confirmed, unconfirmed and contradicted counts are all reported
   label            High (>= 90) · Medium (>= 70) · Low (below 70)
 
 A report gets no score - with the reason shown instead - when there was nothing to check it against: no live
@@ -18,6 +24,7 @@ rewrite after the check changed the text the critics saw.
 import re
 
 HIGH, MEDIUM = 90, 70
+CONTRADICTED = ("misattributed", "outdated", "exaggerated")
 _HEADING = re.compile(r"^[ \t]*(?:#{1,6}[ \t]*(.+?)|\*\*(.+?)\*\*:?)[ \t]*$", re.M)
 _SECTION = re.compile(r"summary|key findings|findings|analysis|discussion|conclusion|outlook|implication|"
                       r"recommendation|what to watch", re.I)
@@ -62,12 +69,16 @@ def trust_score(state: dict, sources_count: int = 0, safety_rewritten: bool = Fa
     reasoning = [v for v, r in zip(verdicts, in_reasoning) if r]
     facts = [v for v, r in zip(verdicts, in_reasoning) if not r] or verdicts
     kept = sum(v.get("decision") == "keep" for v in facts)
-    score = round(100 * kept / len(facts))
+    contradicted = sum(v.get("decision") != "keep" and v.get("verdict") in CONTRADICTED for v in facts)
+    score = round(100 * (len(facts) - contradicted) / len(facts))
     return {
         "score": score,
         "label": label_for(score),
+        "basis": "not_contradicted",
         "claims_checked": len(facts),
         "claims_verified": kept,
+        "claims_unconfirmed": len(facts) - kept - contradicted,
+        "claims_contradicted": contradicted,
         "claims_flagged": len(facts) - kept,
         "interpretations_checked": len(reasoning),
         "interpretations_flagged": sum(v.get("decision") != "keep" for v in reasoning),

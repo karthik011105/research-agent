@@ -27,13 +27,16 @@ export function OriginBadge({ origin, liveSources, count }: { origin?: string; l
   return <Badge tone="good"><Globe size={12} /> Live web · {count} sources</Badge>
 }
 
-/** The report's trust score: the share of its factual claims that the two critics confirmed against the sources. */
+/** The report's trust score: the share of its facts that do not contradict their sources (two AI critics checked
+ *  each one). Confirmed, not-found and contradicted counts are shown under the title. */
 export function TrustBadge({ trust }: { trust?: Trust | null }) {
   if (!trust) return null
   if (trust.score == null) return <Badge title={`Not scored: ${trust.reason || ''}`}><ShieldCheck size={12} /> Trust: not scored</Badge>
   const tone = trust.label === 'High' ? 'good' : trust.label === 'Medium' ? 'warn' : 'bad'
-  return <Badge tone={tone} title={`${trust.claims_verified} of ${trust.claims_checked} facts verified against their sources by two critics (interpretations are counted separately)`}>
-    <ShieldCheck size={12} /> Trust {trust.score}% · {trust.label}</Badge>
+  const title = trust.claims_contradicted != null
+    ? `${(trust.claims_checked ?? 0) - trust.claims_contradicted} of ${trust.claims_checked} facts do not contradict their sources (checked by two AI critics)`
+    : `${trust.claims_verified} of ${trust.claims_checked} facts verified against their sources by two critics`
+  return <Badge tone={tone} title={title}><ShieldCheck size={12} /> Trust {trust.score}% · {trust.label}</Badge>
 }
 
 /** Human-in-the-loop status of a report: held for a reviewer, approved or rejected by one. */
@@ -47,11 +50,16 @@ export function ReviewBadge({ status }: { status?: ReviewStatus | null }) {
 function trustLine(trust?: Trust | null): string | null {
   if (!trust) return null
   if (trust.score == null) return `Trust score not given: ${trust.reason}.`
-  const flagged = trust.claims_flagged ? ` (${trust.claims_flagged} flagged)` : ''
   const reasoning = trust.interpretations_checked
     ? ` · ${trust.interpretations_flagged} of ${trust.interpretations_checked} interpretation sentences flagged` : ''
-  return `${trust.claims_verified} of ${trust.claims_checked} facts verified against their sources by two AI critics${flagged}${reasoning}` +
-    ` · ${trust.drafts === 2 ? 'rewritten once with the critics’ fixes' : 'passed on the first draft'}`
+  const drafts = (trust.drafts ?? 1) > 1 ? 'rewritten once with the critics’ fixes' : 'passed on the first draft'
+  if (trust.claims_contradicted == null) {          // reports scored before the contradiction split
+    const flagged = trust.claims_flagged ? ` (${trust.claims_flagged} flagged)` : ''
+    return `${trust.claims_verified} of ${trust.claims_checked} facts verified against their sources by two AI critics${flagged}${reasoning} · ${drafts}`
+  }
+  const ok = (trust.claims_checked ?? 0) - trust.claims_contradicted
+  return `No contradiction in ${ok} of ${trust.claims_checked} facts (two AI critics) · ${trust.claims_verified} confirmed word-for-word` +
+    ` · ${trust.claims_unconfirmed} not found in the source excerpts · ${trust.claims_contradicted} contradict their source${reasoning} · ${drafts}`
 }
 
 export function ReportView({ topic, report, sources, subQuestions = [], origin, liveSources, trust, reviewStatus, onPdf, extraActions }: Props) {

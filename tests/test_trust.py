@@ -3,15 +3,22 @@ from app.history import history_record
 from app.trust import label_for, trust_score
 
 
-def verdicts(kept, flagged, agreed=True):
-    return ([{"decision": "keep", "agreed": agreed}] * kept) + ([{"decision": "fix", "agreed": False}] * flagged)
+def verdicts(kept, flagged, agreed=True, verdict="misattributed"):
+    return ([{"decision": "keep", "verdict": "supported", "agreed": agreed}] * kept) +            ([{"decision": "fix", "verdict": verdict, "agreed": False}] * flagged)
 
 
-def test_score_is_the_share_of_claims_both_critics_kept():
+def test_score_is_the_share_of_facts_not_contradicted_by_their_sources():
     t = trust_score({"live_sources": True, "claim_verdicts": verdicts(18, 2), "iterations": 2}, sources_count=9)
-    assert t["score"] == 90 and t["label"] == "High"
-    assert (t["claims_checked"], t["claims_verified"], t["claims_flagged"]) == (20, 18, 2)
+    assert t["score"] == 90 and t["label"] == "High" and t["basis"] == "not_contradicted"
+    assert (t["claims_checked"], t["claims_verified"], t["claims_contradicted"], t["claims_unconfirmed"]) == (20, 18, 2, 0)
     assert t["critics_agreed"] == 18 and t["sources"] == 9 and t["drafts"] == 2
+
+
+def test_not_found_in_the_excerpts_is_reported_but_is_not_a_contradiction():
+    mixed = verdicts(11, 3, verdict="exaggerated") + verdicts(0, 5, verdict="unsupported") + verdicts(0, 1, verdict="unverified")
+    t = trust_score({"live_sources": True, "claim_verdicts": mixed})
+    assert (t["claims_verified"], t["claims_unconfirmed"], t["claims_contradicted"]) == (11, 6, 3)
+    assert t["score"] == 85 and t["label"] == "Medium"
 
 
 def test_labels():
@@ -95,10 +102,10 @@ The market keeps growing [1, 2].
 def test_the_score_counts_facts_and_reports_interpretations_separately():
     from app.trust import is_interpretation
     verdicts = [
-        {"text": "BYD sold 68% of EVs in Vietnam in H1 2026 [1].", "decision": "fix"},           # summary: a fact
-        {"text": "Europe sold 4.5 million EVs by October 2026 [2].", "decision": "keep"},         # findings
-        {"text": "Europe's growth suggests faster adoption outside China [2].", "decision": "fix"},
-        {"text": "The market keeps growing [1, 2].", "decision": "fix"},
+        {"text": "BYD sold 68% of EVs in Vietnam in H1 2026 [1].", "decision": "fix", "verdict": "misattributed"},
+        {"text": "Europe sold 4.5 million EVs by October 2026 [2].", "decision": "keep", "verdict": "supported"},
+        {"text": "Europe's growth suggests faster adoption outside China [2].", "decision": "fix", "verdict": "unsupported"},
+        {"text": "The market keeps growing [1, 2].", "decision": "fix", "verdict": "unsupported"},
     ]
     assert [is_interpretation(REPORT, v["text"]) for v in verdicts] == [False, False, True, True]
     t = trust_score({"live_sources": True, "claim_verdicts": verdicts}, report=REPORT)
