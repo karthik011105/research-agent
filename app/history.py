@@ -112,6 +112,12 @@ class PostgresHistoryStore:
             rows = await conn.fetch(sql, *args)
         return [_row(r) for r in rows]
 
+    async def delete(self, job_id: str) -> dict | None:
+        """Deletes one report from the history; returns what was deleted, or None if there was no such report."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("DELETE FROM report_history WHERE job_id = $1 RETURNING job_id, report", job_id)
+        return dict(row) if row else None
+
     async def decide(self, job_id: str, status: str, note: str) -> dict | None:
         """Records a reviewer's decision on a report that is waiting for one; None if there is no such report."""
         async with self.pool.acquire() as conn:

@@ -64,6 +64,14 @@ async def ltm_store(config: Config, topic: str, report: str, report_id: str, sou
         )
 
 
+async def ltm_forget(report_id: str, report: str) -> int:
+    """Removes a report from long-term memory (by id, or by its exact text for rows stored under another id)."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        status = await conn.execute("DELETE FROM reports WHERE id = $1 OR report = $2", report_id, report)
+    return int(status.split()[-1]) if status.startswith("DELETE") else 0
+
+
 async def ltm_search(config: Config, topic: str, session_id: str | None = None) -> dict | None:
     embedding = await embed(topic)
     pool = get_pool()

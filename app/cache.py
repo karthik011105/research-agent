@@ -73,6 +73,19 @@ async def cache_get(redis: aioredis.Redis, config: Config, query: str, session_i
     return None
 
 
+async def cache_forget(redis: aioredis.Redis, report: str) -> int:
+    """Removes every cached entry holding exactly this report, so a deleted report is never served again."""
+    removed = 0
+    for key in await redis.hkeys(_INDEX):
+        key = key.decode() if isinstance(key, bytes) else key
+        cached = await redis.get(key)
+        if cached is None or json.loads(cached).get("report") == report:
+            await redis.delete(key)
+            await redis.hdel(_INDEX, key)
+            removed += cached is not None
+    return removed
+
+
 async def cache_set(redis: aioredis.Redis, config: Config, query: str, report: str, sources: list[dict],
                     session_id: str | None = None) -> None:
     owner = _owner(config, session_id)

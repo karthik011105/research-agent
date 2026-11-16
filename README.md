@@ -250,7 +250,7 @@ bash scripts/resume_safe.sh             # bring it back (the URL changes on each
 
 API keys (Groq, Tavily, LangSmith, the app's `API_KEY`) live in the Secrets Manager secret `research-agent/config`. A local Docker setup also exists (`docker compose up`, see `scripts/local_env.py`).
 
-**Tests:** `pip install -r requirements-dev.txt && pytest` runs 422 tests. They include end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit-convergence simulations.
+**Tests:** `pip install -r requirements-dev.txt && pytest` runs 425 tests. They include end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit-convergence simulations.
 
 ## Project layout
 

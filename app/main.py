@@ -34,9 +34,9 @@ from app.security.rules import PostgresRuleStore, RuleBook
 from app.security.service import execute_attack_run, execute_memory_run, propose_rule_for_attack
 from app.trust import needs_review, trust_score, unscored
 from app.auth import require_api_key
-from app.cache import cache_get, cache_set
+from app.cache import cache_forget, cache_get, cache_set
 from app.guardrails import validate_input, validate_output
-from app.memory import session_add, session_get, ltm_search, ltm_search_related, ltm_store, ltm_diff, db_migrate
+from app.memory import session_add, session_get, ltm_forget, ltm_search, ltm_search_related, ltm_store, ltm_diff, db_migrate
 from app.queue import (
     push_job, get_result, set_result, ensure_group, consume_jobs, ack_job, requeue_job, start_attempt,
 )
@@ -464,6 +464,22 @@ async def decide_review(job_id: str, req: ReviewRequest):
         raise HTTPException(status_code=409, detail="No report waiting for review with this id")
     logger.info(f"Human review: report {job_id} {row['review_status']}")
     return {"job_id": job_id, "review_status": row["review_status"], "reviewed_at": row["reviewed_at"]}
+
+
+@app.delete("/reports/{job_id}", dependencies=[Depends(require_api_key)])
+async def delete_report(job_id: str):
+    """Deletes a report from the history, and from the cache and long-term memory so it is never reused."""
+    row = await history_store.delete(job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such report")
+    removed = {"cache": 0, "memory": 0}
+    try:
+        removed["cache"] = await cache_forget(redis_client, row["report"])
+        removed["memory"] = await ltm_forget(job_id, row["report"])
+    except Exception as e:
+        logger.warning(f"Report {job_id} deleted from history, but not from memory: {e}")
+    logger.info(f"Report {job_id} deleted (cache entries: {removed['cache']}, memory rows: {removed['memory']})")
+    return {"deleted": job_id, "removed_from": removed}
 
 
 @app.get("/reports/{job_id}/pdf", dependencies=[Depends(require_api_key)])

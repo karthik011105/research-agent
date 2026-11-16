@@ -111,3 +111,12 @@ async def test_size_cap_counts_every_sessions_entries(redis, ccfg):
     for i, topic in enumerate(("ai chips", "ai regulation", "quantum")):
         await cache_set(redis, ccfg, topic, topic, [], session_id=f"s{i}")
     assert await redis.hlen("semantic:index") == 2
+
+
+async def test_deleting_a_report_removes_it_from_the_cache(ccfg, redis):
+    from app.cache import cache_forget
+    await cache_set(redis, ccfg, "ai chips", "## Report A", [], "s1")
+    await cache_set(redis, ccfg, "quantum", "## Report B", [], "s1")
+    assert await cache_forget(redis, "## Report A") == 1
+    assert await cache_get(redis, ccfg, "ai chips", "s1") is None
+    assert (await cache_get(redis, ccfg, "quantum", "s1"))["report"] == "## Report B"
