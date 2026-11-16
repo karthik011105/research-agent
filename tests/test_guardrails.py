@@ -39,3 +39,31 @@ async def test_rewrite_for_safety_keeps_findings_and_sources(config, monkeypatch
     assert "filter:MISCONDUCT:LOW" in prompt and "no step-by-step instructions" in prompt
     assert "- classifiers help [2]" in prompt                  # same findings, not a new search
     assert report.endswith("[2] Page 2 — https://example.com/2")
+
+
+TOPIC_ONLY = {"action": "GUARDRAIL_INTERVENED", "assessments": [{
+    "topicPolicy": {"topics": [{"name": "illegal_activities", "type": "DENY", "action": "BLOCKED"}]}}]}
+
+
+def _fake_bedrock(monkeypatch, response):
+    import app.guardrails as g
+    monkeypatch.setattr(g, "_apply_guardrail_sync", lambda config, text, source: response)
+
+
+async def test_a_report_that_only_matches_a_denied_topic_is_allowed(config, monkeypatch):
+    # AI news mentioning a lawsuit or a hack: reporting, not instructions (blocked live on 2026-11-16)
+    from app.guardrails import topic_only, validate_output
+    config.guardrails_enabled = True
+    _fake_bedrock(monkeypatch, TOPIC_ONLY)
+    assert await validate_output(config, "report") == (True, "", [])
+    assert topic_only(["topic:illegal_activities"]) and not topic_only([]) and not topic_only(["topic:x", "pii:EMAIL"])
+
+
+async def test_harm_filters_still_block_the_report_and_topics_still_block_questions(config, monkeypatch):
+    from app.guardrails import validate_input, validate_output
+    config.guardrails_enabled = True
+    _fake_bedrock(monkeypatch, BLOCKED)                     # misconduct filter + topic
+    ok, _, fired = await validate_output(config, "report")
+    assert not ok and "filter:MISCONDUCT:LOW" in fired
+    _fake_bedrock(monkeypatch, TOPIC_ONLY)
+    assert (await validate_input(config, "how to hack a bank account"))[0] is False

@@ -62,6 +62,18 @@ async def validate_output(config: Config, text: str) -> tuple[bool, str, list[st
     )
     if response.get("action") == "GUARDRAIL_INTERVENED":
         fired = intervened_policies(response)
+        if topic_only(fired):
+            # Denied topics describe what a user may not ASK for ("how to hack a bank account"). On a finished report
+            # they also fire on plain reporting - AI news that mentions a lawsuit, a scam or a hack was blocked twice.
+            # The harm checks still apply to the report: hate, violence, sexual content, insults, misconduct
+            # (instructions for crimes) and PII. Questions are still checked against the topics.
+            logger.info(f"Output guardrail: only denied topics matched ({fired}) - allowed, the harm filters passed")
+            return True, "", []
         logger.warning(f"Output guardrail intervened: {fired}")
         return False, "Output blocked by safety guardrail.", fired
     return True, "", []
+
+
+def topic_only(fired: list[str]) -> bool:
+    """True when every policy that fired is a denied topic (no content filter, word list or PII match)."""
+    return bool(fired) and all(p.startswith("topic:") for p in fired)
