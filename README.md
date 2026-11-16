@@ -54,7 +54,7 @@ flowchart LR
 | **Extract** (parallel) | Pulls cited facts for each sub-question from that sub-question's sources | gpt-oss-120b |
 | **Gap check** | Starts one more search round if something important is missing | gpt-oss-120b |
 | **Writer** | Writes the report with `[n]` citations. The source list is appended by code, so URLs can't be invented. | gpt-oss-120b (variant learned, see below) |
-| **Critic panel** | The report is split into claims. A **fact-checker** and a **skeptic** (different model families) judge each claim and must quote the source, and code discards invented quotes. The writer gets an exact list of claims to fix (one rewrite). This is the default (`CRITIC_MODE=panel`) since it was measured best; `single` (one YES/NO checker) and `debate` remain available. Anything still flagged after the last rewrite is shown to the reader under **Fact-check notes**. Every report gets a **trust score**: the share of its claims the critics confirmed against their sources (High ≥ 90%, Medium ≥ 70%, else Low), or no score with the reason when nothing could be checked. **Human-in-the-loop review:** a new report below High trust, with fact-check notes or without a score waits on the **Human review** page, and only reports a person approves are reused for other users from the cache or long-term memory. | gpt-oss-120b + Qwen |
+| **Critic panel** | The report is split into claims. A **fact-checker** and a **skeptic** (different model families) judge each claim and must quote the source, and code discards invented quotes. The writer gets an exact list of claims to fix (one rewrite). This is the default (`CRITIC_MODE=panel`) since it was measured best; `single` (one YES/NO checker) and `debate` remain available. Anything still flagged after the last rewrite is shown to the reader under **Fact-check notes**. Every report gets a **trust score**: the share of its factual claims the critics confirmed against their sources (High ≥ 90%, Medium ≥ 70%, else Low); sentences in Analysis and Conclusion are checked too but counted separately as interpretations, or no score with the reason when nothing could be checked. **Human-in-the-loop review:** a new report below High trust, with fact-check notes or without a score waits on the **Human review** page, and only reports a person approves are reused for other users from the cache or long-term memory. | gpt-oss-120b + Qwen |
 
 ---
 
@@ -250,7 +250,7 @@ bash scripts/resume_safe.sh             # bring it back (the URL changes on each
 
 API keys (Groq, Tavily, LangSmith, the app's `API_KEY`) live in the Secrets Manager secret `research-agent/config`. A local Docker setup also exists (`docker compose up`, see `scripts/local_env.py`).
 
-**Tests:** `pip install -r requirements-dev.txt && pytest` runs 430 tests. They include end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit-convergence simulations.
+**Tests:** `pip install -r requirements-dev.txt && pytest` runs 432 tests. They include end-to-end pipeline runs with scripted models, attack-tracing scenarios and bandit-convergence simulations.
 
 ## Project layout
 

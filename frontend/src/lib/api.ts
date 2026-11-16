@@ -50,6 +50,7 @@ export async function downloadFile(path: string, filename: string) {
 export type Trust = {
   score: number | null; label: string; reason?: string
   claims_checked?: number; claims_verified?: number; claims_flagged?: number; critics_agreed?: number
+  interpretations_checked?: number; interpretations_flagged?: number
   sources?: number; drafts?: number
 }
 

@@ -434,6 +434,9 @@ class ExtractAgent:
             f"Extract the key facts that answer the {'sub-question' if focus else 'topic'} from the sources below "
             f"as at most 8 bullet points. Give the date of each event or announcement when the source states "
             f"it. Only include facts that answer the {'sub-question' if focus else 'topic'}. "
+            f"Keep the scope of every figure exactly as the source gives it - which country or market, which "
+            f"group or product, and which period (e.g. '68% of EV sales in Vietnam in H1 2026', not '68% of EV "
+            f"sales'). "
             f"End every bullet with the id of the source it came from, e.g. [2] or [1, 3].\n\n"
             f"{format_sources(sources)}",
         ))
@@ -536,7 +539,13 @@ class WriterAgent:
             f"Cover every sub-question in the findings (each one under '###'); if one has no findings, say in one "
             f"line that no reliable information was found for it. Attribute each claim to what the source actually "
             f"says - do not merge details from different sources or documents into one claim, and never put "
-            f"figures that belong to different models, products or organisations into one sentence.\n"
+            f"figures that belong to different models, products or organisations into one sentence. Keep the scope "
+            f"of every figure as the findings give it (country or market, group, period): never present a figure for "
+            f"one country or market as a global or general one.\n"
+            f"Analysis and Conclusion: draw only conclusions that follow directly from the cited findings and cite "
+            f"the findings each one rests on. Add no new facts, figures, causes or predictions, and no judgement "
+            f"words (such as modest, significant, critical, demonstrates, proves) unless a source uses them. Do not "
+            f"state that evidence or data does not exist - say that the sources found do not report it.\n"
             f"{recency_rule}{citation_rule}"
         )
         pinned = {"variant": variant} if variant else {}   # only when the writer bandit chose one

@@ -205,7 +205,7 @@ async def _process_job(data: dict, msg_id: str):
                 safety_rewritten = False
             # Rewrites are capped: problems the critic still found are shown with the report, not dropped silently
             notes = review_notes(final_state)
-            trust = trust_score(final_state, len(sources), safety_rewritten)
+            trust = trust_score(final_state, len(sources), safety_rewritten, report=report_text)
             await progress.emit("trust", score=trust["score"], label=trust["label"])
             review_needed = needs_review(trust, notes)
             if notes:
