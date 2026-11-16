@@ -300,8 +300,23 @@ def combine_facts(branch_facts: list[dict]) -> str:
 _CITATION_VARIANTS = re.compile(r"[【［\[]\s*(\d+(?:\s*[,，、]\s*\d+)*)\s*(?:†[^】］\]]*)?[】］\]]")
 
 
+_DATED_CITATION = re.compile(r"\[([\d\s,;:/.\-‐‑‒–]+)\]")
+_DATE = re.compile(r"(?<!\d)(?:19|20)\d\d(?:[/.\-‐‑‒–]\d{1,2}){0,2}(?!\d)")
+
+
+def _undate(m: re.Match) -> str:
+    """'[1, 2026-06-01; 7, 2025-10-25]' -> '[1, 7]': a model put each source's date inside the citation (seen live),
+    which hid the citation from the critics and the reader. A bracket holding only a year is left alone."""
+    inner = m.group(1)
+    if not _DATE.search(inner):
+        return m.group(0)
+    ids = re.findall(r"(?<![\d])\d{1,3}(?![\d])", _DATE.sub(" ", inner))
+    return "[" + ", ".join(dict.fromkeys(ids)) + "]" if ids else m.group(0)
+
+
 def normalize_citations(text: str) -> str:
     """Rewrites the citation styles models produce into the [n] form the rest of the pipeline reads."""
+    text = _DATED_CITATION.sub(_undate, text)
     return _CITATION_VARIANTS.sub(lambda m: "[" + ", ".join(re.findall(r"\d+", m.group(1))) + "]", text)
 
 

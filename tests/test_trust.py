@@ -111,3 +111,11 @@ def test_a_report_with_only_interpretations_is_scored_on_all_its_claims():
     t = trust_score({"live_sources": True, "claim_verdicts": [{"text": "Growth suggests adoption [1].", "decision": "keep"}]},
                     report=only)
     assert t["score"] == 100 and t["claims_checked"] == 1
+
+
+def test_dates_inside_citations_are_removed():
+    from app.agents import normalize_citations
+    assert normalize_citations("safeguards [1, 2026‑06‑01; 7, 2025‑10‑25].") == "safeguards [1, 7]."
+    assert normalize_citations("reports [2, 2026-05-13; 8, 2026-01-01]") == "reports [2, 8]"
+    assert normalize_citations("in [2024] the share") == "in [2024] the share"        # a year alone stays
+    assert normalize_citations("grew [3] and [1, 4]") == "grew [3] and [1, 4]"
