@@ -127,7 +127,7 @@ class Config:
 
         # Agent tuning
         self.agent_report_truncate: int = int(data.get("AGENT_REPORT_TRUNCATE", 3000))
-        self.agent_max_iterations: int = int(data.get("AGENT_MAX_ITERATIONS", 2))
+        self.agent_max_iterations: int = int(data.get("AGENT_MAX_ITERATIONS", 3))   # drafts: up to two rewrites
         self.critic_report_truncate: int = int(data.get("CRITIC_REPORT_TRUNCATE", 8000))
         self.critic_source_chars: int = int(data.get("CRITIC_SOURCE_CHARS", 600))
         # Step 3: "single" (one YES/NO critic), "panel" (fact-checker + skeptic) or "debate" (panel + debate on

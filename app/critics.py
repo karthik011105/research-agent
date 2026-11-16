@@ -109,9 +109,10 @@ def _source_text(src: dict) -> str:
     return f"{source_header(src)} {src.get('content', '')}"
 
 
-def best_passages(claim: Claim, sources: list[dict], per_source: int = 2, size: int = 380) -> list[str]:
+def best_passages(claim: Claim, sources: list[dict], per_source: int = 3, size: int = 500) -> list[str]:
     """Each cited source's title and date, then its passages that share the most terms with the claim (numbers
-    count double)."""
+    count double). 3 x 500 characters (was 2 x 380): in live reports most remaining flags said the passages shown
+    did not mention a claim that the extractor had read elsewhere in the same source."""
     terms = _terms(claim.text)
     by_id = {s["id"]: s for s in sources}
     picked = []
