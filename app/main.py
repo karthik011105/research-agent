@@ -40,7 +40,7 @@ from app.memory import session_add, session_get, ltm_forget, ltm_search, ltm_sea
 from app.queue import (
     push_job, get_result, set_result, ensure_group, consume_jobs, ack_job, requeue_job, start_attempt,
 )
-from app.agents import build_graph, initial_state, quick_reply, review_notes, rewrite_for_safety, with_review_notes
+from app.agents import build_graph, initial_state, quick_reply, recheck, review_notes, rewrite_for_safety, with_review_notes
 from app.output import generate_pdf, generate_json_report, get_report_diff
 from app.history import REVIEW_DECISIONS, PostgresHistoryStore, history_record, review_report
 from app.eval import evaluate_report, run_batch_evaluation, fetch_recent_topics
@@ -198,6 +198,11 @@ async def _process_job(data: dict, msg_id: str):
             if not ok:
                 await publish({"status": "blocked", "error": reason})
                 return
+            if safety_rewritten:
+                # the critics checked the earlier draft: check the text the reader gets, so the trust score and the
+                # fact-check notes match it (before, the notes quoted sentences the rewrite had changed)
+                final_state = {**final_state, **await recheck(config, final_state, report_text)}
+                safety_rewritten = False
             # Rewrites are capped: problems the critic still found are shown with the report, not dropped silently
             notes = review_notes(final_state)
             trust = trust_score(final_state, len(sources), safety_rewritten)

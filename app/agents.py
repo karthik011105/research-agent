@@ -607,6 +607,28 @@ class CriticAgent:
         return passed, "" if passed else check.strip()[:1000]
 
 
+async def recheck(config: Config, state: dict, report: str) -> dict:
+    """The fact check once more, on a report whose text changed after it (the safety rewrite), so its trust score and
+    fact-check notes describe the text the reader gets. Returns the verification fields to merge into the state."""
+    if not state.get("live_sources"):
+        return {}
+    mode = config.critic_mode
+    await progress.emit("checking", mode=mode if mode in ("panel", "debate") else "single")
+    try:
+        if mode in ("panel", "debate"):
+            from app.critics import run_panel
+            result = await run_panel(config, report, state["sources"], debate=(mode == "debate"))
+            await progress.emit("checked", mode=mode, passed=result.passed, claims=len(result.claims),
+                                needs_work=sum(c["decision"] != "keep" for c in result.claims), debated=0)
+            return {"verified": result.passed, "critic_feedback": result.feedback, "claim_verdicts": result.claims}
+        verified, feedback = await CriticAgent(config).run(report, state["sources"])
+        await progress.emit("checked", mode="single", passed=verified, needs_work=0 if verified else 1)
+        return {"verified": verified, "critic_feedback": feedback, "claim_verdicts": []}
+    except Exception as e:
+        logger.warning(f"Re-check after the safety rewrite failed: {type(e).__name__}: {e}")
+        return {"verified": False, "critic_feedback": CRITIC_UNAVAILABLE, "claim_verdicts": []}
+
+
 class OrchestratorAgent:
     """
     Coordinates the sub-agents as a map-reduce graph:

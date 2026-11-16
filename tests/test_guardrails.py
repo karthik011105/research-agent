@@ -67,3 +67,26 @@ async def test_harm_filters_still_block_the_report_and_topics_still_block_questi
     assert not ok and "filter:MISCONDUCT:LOW" in fired
     _fake_bedrock(monkeypatch, TOPIC_ONLY)
     assert (await validate_input(config, "how to hack a bank account"))[0] is False
+
+
+async def test_a_safety_rewritten_report_is_fact_checked_again(config, monkeypatch):
+    # the notes and trust score must describe the rewritten text, not the draft the critics saw before
+    import app.critics as critics
+    from app.agents import CRITIC_UNAVAILABLE, recheck
+    from app.critics import PanelResult
+    seen = []
+
+    async def panel(config_, report, sources, debate, **kw):
+        seen.append(report)
+        return PanelResult(passed=False, feedback="FIX x", llm_calls=2,
+                           claims=[{"text": "a", "decision": "keep"}, {"text": "b", "decision": "fix"}])
+    monkeypatch.setattr(critics, "run_panel", panel)
+    config.critic_mode = "panel"
+    out = await recheck(config, {"live_sources": True, "sources": [make_source(1)]}, "the rewritten report")
+    assert seen == ["the rewritten report"] and len(out["claim_verdicts"]) == 2 and out["verified"] is False
+    assert await recheck(config, {"live_sources": False}, "x") == {}
+
+    async def broken(*a, **kw):
+        raise RuntimeError("LLM daily limit reached")
+    monkeypatch.setattr(critics, "run_panel", broken)
+    assert (await recheck(config, {"live_sources": True, "sources": []}, "x"))["critic_feedback"] == CRITIC_UNAVAILABLE
