@@ -53,6 +53,8 @@ export type Trust = {
   sources?: number; drafts?: number
 }
 
+export type ReviewStatus = 'not_needed' | 'pending' | 'approved' | 'rejected'
+
 export type Source = { id: number; title: string; url: string; published_date?: string; provider?: string; kind?: string }
 
 export type JobResult = {
@@ -67,12 +69,14 @@ export type JobResult = {
   sources?: Source[]
   review_notes?: string[]
   trust?: Trust
+  review?: { status: ReviewStatus }
   monitor_id?: string
 }
 
 export type HistoryItem = {
   job_id: string; topic: string; origin: string; live_sources: boolean; sources_count: number
   notes_count: number; created_at: string; preview: string; trust?: Trust | null
+  review_status?: ReviewStatus; review_note?: string | null; reviewed_at?: string | null
 }
 export type HistoryReport = HistoryItem & { report: string; sources: Source[]; sub_questions: string[] }
 

@@ -177,6 +177,7 @@ export function ResearchPage() {
           origin={result.origin}
           liveSources={result.live_sources}
           trust={result.trust}
+          reviewStatus={result.review?.status}
           onPdf={() => downloadFile(`/result/${jobId}/pdf`, `report-${jobId?.slice(0, 8)}.pdf`)}
           extraActions={<>
             {result.origin === 'pipeline' && (

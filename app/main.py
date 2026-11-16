@@ -32,7 +32,7 @@ from app.security.attacks import ATTACKS, ATTACKS_BY_ID
 from app.security.memory_poisoning import DEFENSE_SETTINGS
 from app.security.rules import PostgresRuleStore, RuleBook
 from app.security.service import execute_attack_run, execute_memory_run, propose_rule_for_attack
-from app.trust import trust_score, unscored
+from app.trust import needs_review, trust_score, unscored
 from app.auth import require_api_key
 from app.cache import cache_get, cache_set
 from app.guardrails import validate_input, validate_output
@@ -42,7 +42,7 @@ from app.queue import (
 )
 from app.agents import build_graph, initial_state, quick_reply, review_notes, rewrite_for_safety, with_review_notes
 from app.output import generate_pdf, generate_json_report, get_report_diff
-from app.history import PostgresHistoryStore, history_record
+from app.history import REVIEW_DECISIONS, PostgresHistoryStore, history_record, review_report
 from app.eval import evaluate_report, run_batch_evaluation, fetch_recent_topics
 
 config = Config()
@@ -163,6 +163,7 @@ async def _process_job(data: dict, msg_id: str):
 
         notes: list[str] = []   # what the critic still flagged in the final draft (pipeline runs only)
         trust = unscored("reused from cache or memory, not checked again (the original run's score is in History)")
+        review_needed = False   # human-in-the-loop: doubtful new reports wait for a person before shared memory
         if hit:
             report_text, sources = hit["report"], hit.get("sources") or []
             live_sources, search_rounds, sub_questions, scraped_count = bool(sources), 0, [], 0
@@ -201,10 +202,14 @@ async def _process_job(data: dict, msg_id: str):
             notes = review_notes(final_state)
             trust = trust_score(final_state, len(sources), safety_rewritten)
             await progress.emit("trust", score=trust["score"], label=trust["label"])
+            review_needed = needs_review(trust, notes)
             if notes:
                 log.info(f"Final draft still has {len(notes)} flagged point(s) - attaching them to the report")
                 report_text = with_review_notes(report_text, notes)
-            if memory_write_allowed(config, final_state):
+            if review_needed:
+                log.info(f"Report held for human review (trust {trust['score']}, {len(notes)} note(s)): "
+                         "not stored in shared memory unless a reviewer approves it")
+            elif memory_write_allowed(config, final_state):
                 await cache_set(redis_client, config, topic, report_text, sources, session_id)
                 await ltm_store(config, topic, report_text, str(uuid.uuid4()), sources, session_id)
             else:
@@ -236,6 +241,7 @@ async def _process_job(data: dict, msg_id: str):
             "writer_variant": (final_state.get("writer_variant") or "") if origin == "pipeline" else "",
             "review_notes": notes,
             "trust": trust,
+            "review": {"status": "pending" if review_needed else "not_needed"},
             "monitor_id": monitor_id,
             # page text stays server-side; the client only needs what it shows
             "sources": [{k: s.get(k, "") for k in ("id", "title", "url", "published_date", "provider", "kind")} for s in sources],
@@ -330,7 +336,7 @@ class ResearchRequest(BaseModel):
 # same index.html; the API routes are all on other paths. Without a build (local runs) the classic page is served.
 WEB_DIR = pathlib.Path(os.environ.get("WEB_DIR", "/app/web"))
 CLASSIC_PAGE = pathlib.Path(os.environ.get("CLASSIC_PAGE", "/app/index.html"))
-WEB_PAGES = ("/", "/history", "/history/{job_id}", "/dashboard", "/watch")
+WEB_PAGES = ("/", "/history", "/history/{job_id}", "/review", "/review/{job_id}", "/dashboard", "/watch")
 
 
 def _web_index() -> pathlib.Path:
@@ -428,6 +434,36 @@ async def get_report(job_id: str):
     if row is None:
         raise HTTPException(status_code=404, detail="No such report")
     return row
+
+
+class ReviewRequest(BaseModel):
+    decision: str
+    note: str = Field("", max_length=500)
+
+
+@app.get("/reviews", dependencies=[Depends(require_api_key)])
+async def list_reviews(status: str = "pending", limit: int = 100):
+    """Human-in-the-loop queue: reports waiting for a reviewer (status=pending) or already decided (decided)."""
+    if status not in ("pending", "decided"):
+        raise HTTPException(status_code=400, detail="status must be pending or decided")
+    return {"reports": await history_store.list(max(1, min(limit, 200)), review=status)}
+
+
+@app.post("/reviews/{job_id}", dependencies=[Depends(require_api_key)])
+async def decide_review(job_id: str, req: ReviewRequest):
+    """A person approves or rejects a held report. Approved: stored in the cache and long-term memory, so it can be
+    reused. Rejected: never reused for anyone."""
+    if req.decision not in REVIEW_DECISIONS:
+        raise HTTPException(status_code=400, detail="decision must be approve or reject")
+
+    async def remember(row: dict) -> None:
+        await cache_set(redis_client, config, row["topic"], row["report"], row["sources"], row["session_id"])
+        await ltm_store(config, row["topic"], row["report"], row["job_id"], row["sources"], row["session_id"])
+    row = await review_report(history_store, job_id, req.decision, req.note, remember)
+    if row is None:
+        raise HTTPException(status_code=409, detail="No report waiting for review with this id")
+    logger.info(f"Human review: report {job_id} {row['review_status']}")
+    return {"job_id": job_id, "review_status": row["review_status"], "reviewed_at": row["reviewed_at"]}
 
 
 @app.get("/reports/{job_id}/pdf", dependencies=[Depends(require_api_key)])

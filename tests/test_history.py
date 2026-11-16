@@ -38,8 +38,9 @@ def test_the_web_app_pages_and_report_endpoints_are_routed():
     tree = ast.parse(src)
     pages = next(ast.literal_eval(n.value) for n in ast.walk(tree)
                  if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "WEB_PAGES")
-    assert set(pages) == {"/", "/history", "/history/{job_id}", "/dashboard", "/watch"}
-    for route in ('@app.get("/reports"', '@app.get("/reports/{job_id}"', '@app.get("/reports/{job_id}/pdf"'):
+    assert set(pages) == {"/", "/history", "/history/{job_id}", "/review", "/review/{job_id}", "/dashboard", "/watch"}
+    for route in ('@app.get("/reports"', '@app.get("/reports/{job_id}"', '@app.get("/reports/{job_id}/pdf"',
+                  '@app.get("/reviews"', '@app.post("/reviews/{job_id}"'):
         assert route in src
     # no web-app page may shadow an API path
     api_paths = {d.args[0].value for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))

@@ -1,8 +1,8 @@
 import { useMemo, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { BookOpen, Check, Copy, Database, ExternalLink, FileDown, Globe, Info, ListTree, ShieldCheck } from 'lucide-react'
-import type { Source, Trust } from '../lib/api'
+import { BookOpen, Check, Copy, Database, ExternalLink, FileDown, Globe, Info, ListTree, ShieldCheck, UserCheck, UserX } from 'lucide-react'
+import type { ReviewStatus, Source, Trust } from '../lib/api'
 import { domain, kindLabel, prepareReport } from '../lib/format'
 import { Badge, Button, Card } from './ui'
 
@@ -14,6 +14,7 @@ type Props = {
   origin?: string
   liveSources?: boolean
   trust?: Trust | null
+  reviewStatus?: ReviewStatus
   onPdf?: () => void
   extraActions?: ReactNode
 }
@@ -35,6 +36,14 @@ export function TrustBadge({ trust }: { trust?: Trust | null }) {
     <ShieldCheck size={12} /> Trust {trust.score}% · {trust.label}</Badge>
 }
 
+/** Human-in-the-loop status of a report: held for a reviewer, approved or rejected by one. */
+export function ReviewBadge({ status }: { status?: ReviewStatus | null }) {
+  if (status === 'pending') return <Badge tone="warn" title="A person must approve this report before it is reused for other users"><UserCheck size={12} /> Needs human review</Badge>
+  if (status === 'approved') return <Badge tone="good" title="A reviewer approved this report"><UserCheck size={12} /> Human-approved</Badge>
+  if (status === 'rejected') return <Badge tone="bad" title="A reviewer rejected this report: it is never reused"><UserX size={12} /> Rejected by reviewer</Badge>
+  return null
+}
+
 function trustLine(trust?: Trust | null): string | null {
   if (!trust) return null
   if (trust.score == null) return `Trust score not given: ${trust.reason}.`
@@ -43,7 +52,7 @@ function trustLine(trust?: Trust | null): string | null {
     ` · ${trust.drafts === 2 ? 'rewritten once with the critics’ fixes' : 'passed on the first draft'}`
 }
 
-export function ReportView({ topic, report, sources, subQuestions = [], origin, liveSources, trust, onPdf, extraActions }: Props) {
+export function ReportView({ topic, report, sources, subQuestions = [], origin, liveSources, trust, reviewStatus, onPdf, extraActions }: Props) {
   const { body, notes } = useMemo(() => prepareReport(report), [report])
   const [copied, setCopied] = useState(false)
   const [active, setActive] = useState<number | null>(null)
@@ -85,7 +94,7 @@ export function ReportView({ topic, report, sources, subQuestions = [], origin, 
         <div className="mb-6 flex flex-wrap items-start justify-between gap-3 border-b border-line pb-5">
           <div className="min-w-0">
             <h2 className="text-xl font-semibold leading-snug">{topic}</h2>
-            <div className="mt-2 flex flex-wrap gap-2"><OriginBadge origin={origin} liveSources={liveSources} count={sources.length} /><TrustBadge trust={trust} /></div>
+            <div className="mt-2 flex flex-wrap gap-2"><OriginBadge origin={origin} liveSources={liveSources} count={sources.length} /><TrustBadge trust={trust} /><ReviewBadge status={reviewStatus} /></div>
             {trustLine(trust) && <div className="mt-2 text-xs text-muted">{trustLine(trust)}</div>}
           </div>
           <div className="flex flex-wrap gap-2">

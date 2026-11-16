@@ -45,3 +45,9 @@ def trust_score(state: dict, sources_count: int = 0, safety_rewritten: bool = Fa
         "sources": sources_count,
         "drafts": int(state.get("iterations") or 1),
     }
+
+
+def needs_review(trust: dict, notes: list) -> bool:
+    """Human-in-the-loop: a new report a person should look at before it is reused for anyone else - its trust score
+    is below High, it has fact-check notes, or it could not be scored at all."""
+    return bool(notes) or trust.get("score") is None or trust["score"] < HIGH

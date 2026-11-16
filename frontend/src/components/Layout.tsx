@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
-import { BarChart3, Eye, History, KeyRound, Search, Sparkles } from 'lucide-react'
+import { BarChart3, Eye, History, KeyRound, Search, Sparkles, UserCheck } from 'lucide-react'
 import { api, getApiKey } from '../lib/api'
 import { ApiKeyDialog } from './ApiKeyDialog'
 
@@ -9,6 +9,7 @@ type Stats = { search: { searches_today: number; daily_limit: number } }
 const NAV = [
   { to: '/', label: 'Research', icon: Search, end: true },
   { to: '/history', label: 'History', icon: History },
+  { to: '/review', label: 'Human review', icon: UserCheck },
   { to: '/watch', label: 'Topic watch', icon: Eye },
   { to: '/dashboard', label: 'Results', icon: BarChart3 },
 ]
